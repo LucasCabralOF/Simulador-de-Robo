@@ -1,0 +1,9 @@
+node_modules
+dist
+artifacts
+.git
+.github
+*.log
+database.sqlite
+tests
+documentação

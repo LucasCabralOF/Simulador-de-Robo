@@ -1,0 +1,16 @@
+services:
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dh-robotics-simulator:latest
+    container_name: dh_robot_simulator
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - DB_PATH=/app/data/database.sqlite
+    volumes:
+      - ./data:/app/data
