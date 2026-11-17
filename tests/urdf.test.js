@@ -54,3 +54,13 @@ test('parseURDF throws helpful errors for empty or invalid XML', () => {
   assert.throws(() => parseURDF('<something>other</something>'), /tag <robot> não encontrada/);
   assert.throws(() => parseURDF('<robot name="empty"><link name="base"/></robot>'), /Nenhuma junta móvel/);
 });
+
+test('URDF round-trip preserves toolType and toolOffsetRpy via non-enumerable toolConfig', () => {
+  const joints = PRESETS.ur5.joints;
+  const urdf = exportToURDF(joints, 'UR5_Welder', { toolType: 'welder', toolOffsetRpy: [0, -45, 15] });
+  assert.match(urdf, /<tool_config type="welder" offset_rpy="0 -45 15"\/>/);
+  assert.match(urdf, /<link name="tcp_link"\/>/);
+  const parsed = parseURDF(urdf);
+  assert.equal(parsed.length, 6);
+  assert.deepEqual(parsed.toolConfig, { toolType: 'welder', toolOffsetRpy: [0, -45, 15] });
+});

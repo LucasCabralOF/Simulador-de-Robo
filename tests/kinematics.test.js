@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Matrix4 } from 'three';
-import { DEG, DEFAULT_JOINTS, dhMatrix, forwardKinematics, integrateJoints, inverseKinematics, inverseVelocity, jacobianDiagnostics, matrixRows, multiplyVector, normalizeJoints, orientation, rotationFromRPY, validateJoints } from '../src/kinematics.js';
+import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_JOINTS, TOOL_LIST, TOOL_TYPES, computeToolFrame, detectSelfCollision, dhMatrix, flangeRpyFromToolTarget, forwardKinematics, integrateJoints, inverseKinematics, inverseVelocity, jacobianDiagnostics, matrixRows, multiplyVector, normalizeJoints, orientation, rotationFromRPY, sweepJointsCollisionFree, validateJoints } from '../src/kinematics.js';
+import { PRESET_LIST } from '../src/presets.js';
 
 const near = (actual, expected, tolerance = 1e-8) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
 const nearVector = (a, b, tolerance) => a.forEach((v, i) => near(v, b[i], tolerance));
@@ -132,6 +133,30 @@ test('unreachable and limit-constrained targets never report success or exceed l
   assert.equal(result.converged, false); near(result.joints[0].val, 1);
 });
 
+test('inverse converges via active-set projection when prismatic joint saturates at tight limits', () => {
+  const constrainedRpr = [
+    joint({ id: 1, type: 'R', a: 0, alpha: 90, val: 15, min: -90, max: 90 }),
+    joint({ id: 2, type: 'P', a: 0, alpha: -90, val: 3, min: 0, max: 3 }),
+    joint({ id: 3, type: 'R', a: 5, alpha: 0, val: 0, min: -180, max: 180 }),
+  ];
+  // Target requires saturating J2 at max = 3 while J1/J3 swing to (8, 0, 0)
+  const res = inverseKinematics(constrainedRpr, { position: [8, 0, 0], rpy: [0, 0, 0] }, { mode: 'xy' });
+  assert.equal(res.converged, true);
+  assert.ok(res.joints.every(j => j.val >= j.min - 1e-9 && j.val <= j.max + 1e-9));
+  nearVector(forwardKinematics(res.joints).positions.at(-1), [8, 0, 0], 1e-4);
+
+  // Target with narrow prismatic range [0.5, 0.7] and non-zero angular reach
+  const tightStroke = [
+    joint({ id: 1, type: 'R', a: 0, alpha: 90, val: 0, min: -180, max: 180 }),
+    joint({ id: 2, type: 'P', a: 0, alpha: -90, val: 0.6, min: 0.5, max: 0.7 }),
+    joint({ id: 3, type: 'R', a: 5, alpha: 0, val: 0, min: -180, max: 180 }),
+  ];
+  const resTight = inverseKinematics(tightStroke, { position: [4, 3, 0], rpy: [0, 0, 0] }, { mode: 'xy' });
+  assert.equal(resTight.converged, true);
+  assert.ok(resTight.joints[1].val >= 0.5 && resTight.joints[1].val <= 0.7);
+  nearVector(forwardKinematics(resTight.joints).positions.at(-1), [4, 3, 0], 1e-4);
+});
+
 test('validation rejects malformed models and accepts legacy models without speeds', () => {
   for (const data of [null, [], [null], [joint({ type: 'F' })], [joint({ val: NaN })], [joint({ a: Infinity })], [joint({ min: 2, max: 1 })], [joint({ val: 200 })], [joint(), joint()]]) {
     assert.ok(validateJoints(data).length > 0);
@@ -139,4 +164,109 @@ test('validation rejects malformed models and accepts legacy models without spee
   }
   const legacy = DEFAULT_JOINTS.map(({ speed: _speed, ...j }) => j);
   assert.ok(normalizeJoints(legacy).every(j => j.speed === 0));
+});
+
+test('self-collision detector catches jackknife folds, 3D crossings, and spares all presets', () => {
+  for (const preset of PRESET_LIST) {
+    assert.equal(detectSelfCollision(preset.joints).colliding, false, `${preset.id} initial pose should not self-collide`);
+  }
+
+  // RPR folded straight back onto itself (q3 = 90 deg -> Elo 3 passes through Elo 2 & Base)
+  const foldedRpr = DEFAULT_JOINTS.map((j, i) => (i === 2 ? { ...j, val: 90 } : j));
+  const foldCol = detectSelfCollision(foldedRpr);
+  assert.equal(foldCol.colliding, true);
+  assert.ok(Array.isArray(foldCol.point) && foldCol.point.length === 3);
+
+  // Planar 3R arm looping around so link 3 crosses link 1 in mid-space
+  const looped3R = [
+    joint({ id: 1, type: 'R', a: 4, val: 0, min: -180, max: 180 }),
+    joint({ id: 2, type: 'R', a: 3, val: 120, min: -180, max: 180 }),
+    joint({ id: 3, type: 'R', a: 4, val: 120, min: -180, max: 180 }),
+  ];
+  const crossCol = detectSelfCollision(looped3R);
+  assert.equal(crossCol.colliding, true);
+});
+
+test('continuous sweep and integration block tunneling through self-collision boundaries', () => {
+  // Swinging q3 from 30 deg across 90 deg to 120 deg must stop before colliding around 82 deg
+  const targetJump = DEFAULT_JOINTS.map((j, i) => (i === 2 ? { ...j, val: 120 } : j));
+  const swept = sweepJointsCollisionFree(DEFAULT_JOINTS, targetJump);
+  assert.equal(swept.blocked, true);
+  assert.ok(swept.joints[2].val < 83 && swept.joints[2].val > 80, `Expected sweep stop near 82 deg, got ${swept.joints[2].val}`);
+  assert.equal(detectSelfCollision(swept.joints).colliding, false);
+
+  // Differential integration velocity step must also stop safely at boundary
+  const integrated = integrateJoints(DEFAULT_JOINTS, [0, 0, Math.PI], 0.5);
+  assert.ok(integrated.collision !== null);
+  assert.equal(detectSelfCollision(integrated.joints).colliding, false);
+  assert.ok(integrated.joints[2].val < 83);
+});
+
+test('inverse kinematics never converges to or passes through a self-colliding configuration', () => {
+  // Target at origin (0, 0, 0) could trivially fold RPR back if d2 = 5, q3 = 90; solver must never self-collide
+  const resOrigin = inverseKinematics(DEFAULT_JOINTS, { position: [0, 0, 0], rpy: [0, 0, 0] }, { mode: 'xy' });
+  assert.equal(detectSelfCollision(resOrigin.joints).colliding, false);
+
+  // Reachable point on valid non-colliding branch (4, 1, 0)
+  const resSafe = inverseKinematics(DEFAULT_JOINTS, { position: [4, 1, 0], rpy: [0, 0, 0] }, { mode: 'xy' });
+  assert.equal(resSafe.converged, true);
+  assert.equal(detectSelfCollision(resSafe.joints).colliding, false);
+});
+
+test('tool catalog, TCP kinematics, and mounted orientation offset solve tool pose accurately', () => {
+  assert.equal(TOOL_LIST.length, 3);
+  assert.deepEqual(Object.keys(TOOL_TYPES), ['gripper', 'vacuum', 'welder']);
+
+  const fk = forwardKinematics(DEFAULT_JOINTS);
+  const offsetRpy = [0, -90, 0];
+  const welderTcp = computeToolFrame(fk.total, offsetRpy, 'welder');
+  assert.equal(welderTcp.tool.id, 'welder');
+  // Local +X rotated by -90 deg pitch points along flange +Z
+  nearVector(welderTcp.approach, [0, 0, 1], 1e-6);
+
+  // Inverse solve compensated by flangeRpyFromToolTarget achieves desired tool orientation [0, -90, 0]
+  const ur5 = PRESET_LIST.find(p => p.id === 'ur5').joints;
+  const targetToolRpy = [0, -90, 0];
+  const flangeTargetRpy = flangeRpyFromToolTarget(targetToolRpy, [0, -45, 0]);
+  const res = inverseKinematics(ur5, { position: [-4, 2, 4], rpy: flangeTargetRpy }, { mode: 'pose' });
+  assert.equal(res.converged, true);
+  const solvedTool = computeToolFrame(forwardKinematics(res.joints).total, [0, -45, 0], 'welder');
+  nearVector(solvedTool.orientation.rotation.flat(), orientation(rotationFromRPY(targetToolRpy)).rotation.flat(), 1e-4);
+});
+
+test('environment collision detects workbench floor and blocks sphere/box obstacle penetration', () => {
+  // Default environment (floorZ = -0.22, obstacle disabled) must never trigger false collision
+  assert.equal(detectSelfCollision(DEFAULT_JOINTS, null, 'gripper', DEFAULT_ENVIRONMENT).colliding, false);
+
+  // Raising workbench floor to Z = 0.5 catches RPR planar links lying at Z = 0
+  const raisedFloorEnv = { ...DEFAULT_ENVIRONMENT, floorZ: 0.5 };
+  const floorHit = detectSelfCollision(DEFAULT_JOINTS, null, 'gripper', raisedFloorEnv);
+  assert.equal(floorHit.colliding, true);
+  assert.ok(floorHit.message.includes('piso/bancada'));
+
+  // Placing a sphere obstacle at [4, 3, 0] (safe from default pose [4.83, 1.29, 0]) blocks q1 swing 45 -> 110
+  const sphereEnv = {
+    floorEnabled: true,
+    floorZ: -0.22,
+    obstacle: { enabled: true, shape: 'sphere', position: [4, 3, 0], radius: 1.0 },
+  };
+  assert.equal(detectSelfCollision(DEFAULT_JOINTS, null, 'gripper', sphereEnv).colliding, false);
+  const swingTarget = DEFAULT_JOINTS.map((j, i) => (i === 0 ? { ...j, val: 110 } : j));
+  const sweptSphere = sweepJointsCollisionFree(DEFAULT_JOINTS, swingTarget, 'gripper', sphereEnv);
+  assert.equal(sweptSphere.blocked, true);
+  assert.ok(sweptSphere.collision.message.includes('Obstáculo 3D'));
+  assert.ok(sweptSphere.joints[0].val < 80);
+  assert.equal(detectSelfCollision(sweptSphere.joints, null, 'gripper', sphereEnv).colliding, false);
+
+  // Placing a box obstacle right onto target coordinates blocks IK convergence on that point
+  const boxEnv = {
+    floorEnabled: true,
+    floorZ: -0.22,
+    obstacle: { enabled: true, shape: 'box', position: [2, 5, 0], radius: 1.0 },
+  };
+  const blockedIk = inverseKinematics(DEFAULT_JOINTS, { position: [2, 5, 0], rpy: [0, 0, 0] }, {
+    mode: 'xy',
+    environment: boxEnv,
+  });
+  assert.equal(blockedIk.converged, false);
 });

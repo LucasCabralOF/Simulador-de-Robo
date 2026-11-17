@@ -4,7 +4,20 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { normalizeJoints } from '../src/kinematics.js';
+import { normalizeJoints, TOOL_TYPES } from '../src/kinematics.js';
+
+function sanitizeToolConfig(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const toolType = typeof raw.toolType === 'string' && TOOL_TYPES[raw.toolType] ? raw.toolType : 'gripper';
+  const rpyRaw = Array.isArray(raw.toolOffsetRpy) && raw.toolOffsetRpy.length === 3 ? raw.toolOffsetRpy : [0, 0, 0];
+  const toolOffsetRpy = rpyRaw.map(v => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(-180, Math.min(180, n)) : 0;
+  });
+  const gripNum = Number(raw.toolGrip);
+  const toolGrip = Number.isFinite(gripNum) ? Math.max(0, Math.min(100, gripNum)) : 50;
+  return { toolType, toolOffsetRpy, toolGrip };
+}
 
 export async function createApp(db) {
   await new Promise((resolve, reject) => db.run(`CREATE TABLE IF NOT EXISTS simulations (
@@ -13,12 +26,14 @@ export async function createApp(db) {
     data TEXT NOT NULL,
     slug TEXT UNIQUE,
     waypoints TEXT,
+    tool_config TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`, err => err ? reject(err) : resolve()));
 
   // Gracefully add optional columns to older databases
   await new Promise(resolve => db.run('ALTER TABLE simulations ADD COLUMN slug TEXT UNIQUE', () => resolve()));
   await new Promise(resolve => db.run('ALTER TABLE simulations ADD COLUMN waypoints TEXT', () => resolve()));
+  await new Promise(resolve => db.run('ALTER TABLE simulations ADD COLUMN tool_config TEXT', () => resolve()));
 
   const app = express();
   app.use(cors());
@@ -43,6 +58,7 @@ export async function createApp(db) {
           ...row,
           data: normalizeJoints(JSON.parse(row.data)),
           waypoints: row.waypoints ? JSON.parse(row.waypoints) : null,
+          toolConfig: row.tool_config ? sanitizeToolConfig(JSON.parse(row.tool_config)) : null,
         });
       } catch {
         res.status(422).json({ error: 'Simulação armazenada contém um modelo inválido.' });
@@ -51,13 +67,15 @@ export async function createApp(db) {
   });
 
   app.post('/api/simulations', (req, res) => {
-    const { name, data, waypoints } = req.body || {};
+    const { name, data, waypoints, toolConfig } = req.body || {};
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 120) return res.status(400).json({ error: 'Nome deve conter de 1 a 120 caracteres.' });
     let joints;
     try { joints = normalizeJoints(data); }
     catch (error) { return res.status(400).json({ error: error.message }); }
     const waypointsJson = Array.isArray(waypoints) ? JSON.stringify(waypoints) : null;
-    db.run('INSERT INTO simulations (name, data, waypoints) VALUES (?, ?, ?)', [name.trim(), JSON.stringify(joints), waypointsJson], function (err) {
+    const sanitizedTool = sanitizeToolConfig(toolConfig);
+    const toolConfigJson = sanitizedTool ? JSON.stringify(sanitizedTool) : null;
+    db.run('INSERT INTO simulations (name, data, waypoints, tool_config) VALUES (?, ?, ?, ?)', [name.trim(), JSON.stringify(joints), waypointsJson, toolConfigJson], function (err) {
       if (err) return failure(res);
       res.status(201).json({ id: this.lastID, name: name.trim() });
     });
@@ -65,14 +83,16 @@ export async function createApp(db) {
 
   // Cloud SaaS Sharing endpoint: generates public shareable slug
   app.post('/api/simulations/share', (req, res) => {
-    const { name = 'Robô Compartilhado', data, waypoints } = req.body || {};
+    const { name = 'Robô Compartilhado', data, waypoints, toolConfig } = req.body || {};
     let joints;
     try { joints = normalizeJoints(data); }
     catch (error) { return res.status(400).json({ error: error.message }); }
     const slug = 'rob-' + crypto.randomBytes(4).toString('hex');
     const waypointsJson = Array.isArray(waypoints) ? JSON.stringify(waypoints) : null;
-    db.run('INSERT INTO simulations (name, data, slug, waypoints) VALUES (?, ?, ?, ?)',
-      [(typeof name === 'string' && name.trim()) ? name.trim() : 'Robô Compartilhado', JSON.stringify(joints), slug, waypointsJson],
+    const sanitizedTool = sanitizeToolConfig(toolConfig);
+    const toolConfigJson = sanitizedTool ? JSON.stringify(sanitizedTool) : null;
+    db.run('INSERT INTO simulations (name, data, slug, waypoints, tool_config) VALUES (?, ?, ?, ?, ?)',
+      [(typeof name === 'string' && name.trim()) ? name.trim() : 'Robô Compartilhado', JSON.stringify(joints), slug, waypointsJson, toolConfigJson],
       function (err) {
         if (err) return failure(res);
         res.status(201).json({ id: this.lastID, slug, shareUrl: `/share/${slug}` });
@@ -96,6 +116,7 @@ export async function createApp(db) {
           slug: row.slug,
           data: normalizeJoints(JSON.parse(row.data)),
           waypoints: row.waypoints ? JSON.parse(row.waypoints) : null,
+          toolConfig: row.tool_config ? sanitizeToolConfig(JSON.parse(row.tool_config)) : null,
           created_at: row.created_at,
         });
       } catch {

@@ -1,4 +1,4 @@
-import { forwardKinematics, jacobianDiagnostics, matrixRows } from './kinematics.js';
+import { computeToolFrame, forwardKinematics, jacobianDiagnostics, matrixRows } from './kinematics.js';
 
 const fmt = (n, digits = 4) => !Number.isFinite(n) ? 'inf' : (Math.abs(n) < 0.5 * 10 ** -digits ? 0 : n).toFixed(digits);
 
@@ -9,11 +9,19 @@ export function generateAcademicReportHtml(joints, metadata = {}) {
     institution = 'Universidade / Instituto Tecnológico',
     robotName = `Manipulador ${joints.map(j => j.type).join('')}`,
     date = new Date().toLocaleDateString('pt-BR'),
+    toolType = 'gripper',
+    toolOffsetRpy = [0, 0, 0],
+    toolGrip = 50,
   } = metadata;
 
   const fk = forwardKinematics(joints);
   const diag = jacobianDiagnostics(joints, fk.jacobian, 'position', 5);
   const end = fk.positions.at(-1);
+  const safeOffsetRpy = Array.isArray(toolOffsetRpy) && toolOffsetRpy.length === 3
+    ? toolOffsetRpy.map(v => (Number.isFinite(Number(v)) ? Number(v) : 0))
+    : [0, 0, 0];
+  const toolFrame = computeToolFrame(fk.total, safeOffsetRpy, toolType);
+  const tcp = toolFrame.tcpPosition;
 
   const dhTableRows = joints.map((j, i) => `
     <tr>
@@ -86,6 +94,7 @@ export function generateAcademicReportHtml(joints, metadata = {}) {
       <div><strong>Disciplina:</strong> ${courseName}</div>
       <div><strong>Instituição:</strong> ${institution}</div>
       <div><strong>Arquitetura:</strong> ${joints.map(j => j.type).join('')}</div>
+      <div><strong>Ferramenta (TCP):</strong> ${toolFrame.tool.name} · ${toolFrame.tool.length} u (${Math.round(Number(toolGrip) || 0)}%)</div>
     </div>
   </div>
 
@@ -100,10 +109,12 @@ export function generateAcademicReportHtml(joints, metadata = {}) {
     <tbody>${dhTableRows}</tbody>
   </table>
 
-  <h2>2. Transformação Homogênea Resultante (T0_n)</h2>
+  <h2>2. Transformação Homogênea Resultante (T0_n) e TCP</h2>
   <div class="summary-box">
-    <strong>Posição do Efetuador:</strong> X = ${fmt(end[0])} u, Y = ${fmt(end[1])} u, Z = ${fmt(end[2])} u<br>
-    <strong>Orientação (RPY ZYX):</strong> Roll = ${fmt(fk.orientation.rpy[0])}°, Pitch = ${fmt(fk.orientation.rpy[1])}°, Yaw = ${fmt(fk.orientation.rpy[2])}°<br>
+    <strong>Posição da Flange:</strong> X = ${fmt(end[0])} u, Y = ${fmt(end[1])} u, Z = ${fmt(end[2])} u<br>
+    <strong>Orientação da Flange (RPY ZYX):</strong> Roll = ${fmt(fk.orientation.rpy[0])}°, Pitch = ${fmt(fk.orientation.rpy[1])}°, Yaw = ${fmt(fk.orientation.rpy[2])}°<br>
+    <strong>Posição do TCP (${toolFrame.tool.shortLabel}):</strong> X = ${fmt(tcp[0])} u, Y = ${fmt(tcp[1])} u, Z = ${fmt(tcp[2])} u (Offset RPY: [${safeOffsetRpy.map(v => `${fmt(v, 1)}°`).join(', ')}])<br>
+    <strong>Orientação do TCP (RPY ZYX):</strong> Roll = ${fmt(toolFrame.orientation.rpy[0])}°, Pitch = ${fmt(toolFrame.orientation.rpy[1])}°, Yaw = ${fmt(toolFrame.orientation.rpy[2])}°<br>
     <strong>Ortogonalidade:</strong> det(R) = ${fmt(fk.orientation.determinant, 6)}, ||R^T*R - I|| = ${fk.orientation.orthogonality.toExponential(2)}
   </div>
   <table class="math-table" style="max-width: 480px;">${totalTableHtml}</table>

@@ -10,6 +10,9 @@ test('academic report generator outputs comprehensive technical document', () =>
     courseName: 'Controle e Cinemática de Robôs',
     institution: 'Universidade Federal',
     robotName: 'Puma 560 Laboratório',
+    toolType: 'vacuum',
+    toolOffsetRpy: [0, -30, 0],
+    toolGrip: 75,
   };
 
   const html = generateAcademicReportHtml(puma, metadata);
@@ -17,6 +20,8 @@ test('academic report generator outputs comprehensive technical document', () =>
   assert.ok(html.includes('Lucas Engenharia'));
   assert.ok(html.includes('Controle e Cinemática de Robôs'));
   assert.ok(html.includes('Puma 560 Laboratório'));
+  assert.ok(html.includes('Ventosa Pneumática'));
+  assert.ok(html.includes('Posição do TCP'));
   assert.ok(html.includes('Parâmetros de Denavit-Hartenberg'));
   assert.ok(html.includes('Transformação Homogênea Resultante'));
   assert.ok(html.includes('Jacobiano Geométrico'));

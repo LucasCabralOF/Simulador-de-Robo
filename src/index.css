@@ -2,10 +2,18 @@
   color-scheme: dark;
   --bg-dark: #171b1e;
   --bg-panel: #24292d;
+  --bg-input: #181d21;
+  --bg-elevated: #1c2227;
+  --bg-button: #2a3137;
+  --bg-button-hover: #343d45;
   --text-main: #eef2f2;
   --text-muted: #a9b4ba;
   --accent: #62d5b5;
   --border: #3a4247;
+  --border-control: #3e474f;
+  --border-hover: #525e68;
+  --control-height: 36px;
+  --radius: 6px;
   font-family: 'Segoe UI', Arial, sans-serif;
   color: var(--text-main);
   background: var(--bg-dark);

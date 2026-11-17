@@ -1,6 +1,8 @@
 // Universal URDF (Unified Robot Description Format) Parser & Exporter
 // Works seamlessly in both Node.js (test/server) and Browser environments.
 
+import { TOOL_TYPES } from './kinematics.js';
+
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 
@@ -12,12 +14,19 @@ function round(val, decimals = 4) {
  * Exports a serial robot DH joint configuration to a standard ROS URDF XML string.
  * @param {Array} joints - Normalized DH joint array
  * @param {string} robotName - Name of the robot
+ * @param {Object} toolConfig - Active end-effector tool ({ toolType, toolOffsetRpy })
  * @returns {string} URDF XML string
  */
-export function exportToURDF(joints, robotName = 'DH_Robot') {
+export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
   if (!Array.isArray(joints) || joints.length === 0) {
     throw new Error('Nenhuma junta fornecida para exportação URDF.');
   }
+
+  const spec = TOOL_TYPES[toolConfig?.toolType] || TOOL_TYPES.gripper;
+  const offsetRpy = Array.isArray(toolConfig?.toolOffsetRpy) && toolConfig.toolOffsetRpy.length === 3
+    ? toolConfig.toolOffsetRpy.map(v => (Number.isFinite(Number(v)) ? round(Number(v), 2) : 0))
+    : [0, 0, 0];
+  const offsetRpyRad = offsetRpy.map(v => round(v * DEG2RAD));
 
   const cleanName = robotName.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase() || 'dh_robot';
   let xml = `<?xml version="1.0" encoding="utf-8"?>\n`;
@@ -96,19 +105,26 @@ export function exportToURDF(joints, robotName = 'DH_Robot') {
     prevLink = linkName;
   });
 
-  // End-effector tool attachment
-  xml += `  <!-- Tool0 / End-Effector -->\n`;
+  // End-effector tool attachment + TCP link
+  xml += `  <!-- Tool0 / End-Effector (${spec.shortLabel}) -->\n`;
   xml += `  <link name="tool0">\n`;
+  xml += `    <tool_config type="${spec.id}" offset_rpy="${offsetRpy.join(' ')}"/>\n`;
   xml += `    <visual>\n`;
-  xml += `      <origin xyz="0 0 0" rpy="0 0 0"/>\n`;
-  xml += `      <geometry>\n        <sphere radius="0.12"/>\n      </geometry>\n`;
+  xml += `      <origin xyz="${round(spec.length / 2)} 0 0" rpy="0 0 0"/>\n`;
+  xml += `      <geometry>\n        <cylinder radius="${round(spec.radius / 2)}" length="${round(spec.length)}"/>\n      </geometry>\n`;
   xml += `      <material name="tool_gold"/>\n`;
   xml += `    </visual>\n`;
   xml += `  </link>\n\n`;
   xml += `  <joint name="joint_ee_fixed" type="fixed">\n`;
   xml += `    <parent link="${prevLink}"/>\n`;
   xml += `    <child link="tool0"/>\n`;
-  xml += `    <origin xyz="0 0 0" rpy="0 0 0"/>\n`;
+  xml += `    <origin xyz="0 0 0" rpy="${offsetRpyRad.join(' ')}"/>\n`;
+  xml += `  </joint>\n\n`;
+  xml += `  <link name="tcp_link"/>\n`;
+  xml += `  <joint name="joint_tcp_fixed" type="fixed">\n`;
+  xml += `    <parent link="tool0"/>\n`;
+  xml += `    <child link="tcp_link"/>\n`;
+  xml += `    <origin xyz="${round(spec.length)} 0 0" rpy="0 0 0"/>\n`;
   xml += `  </joint>\n\n`;
 
   xml += `</robot>\n`;
@@ -137,6 +153,19 @@ export function parseURDF(urdfString) {
     throw new Error('Formato URDF inválido: tag <robot> não encontrada.');
   }
 
+  let parsedToolType = null;
+  let parsedOffsetRpy = [0, 0, 0];
+  const toolConfigMatch = /<tool_config\b([\s\S]*?)\/?>/i.exec(urdfString);
+  if (toolConfigMatch) {
+    const tAttr = extractAttr(toolConfigMatch[1], 'type');
+    if (tAttr && TOOL_TYPES[tAttr]) parsedToolType = tAttr;
+    const offAttr = extractAttr(toolConfigMatch[1], 'offset_rpy');
+    if (offAttr) {
+      const nums = offAttr.trim().split(/\s+/).map(Number);
+      if (nums.length === 3 && nums.every(Number.isFinite)) parsedOffsetRpy = nums;
+    }
+  }
+
   // Extract all <joint> blocks
   const jointRegex = /<joint\b([\s\S]*?)>([\s\S]*?)<\/joint>/gi;
   const parsedJoints = [];
@@ -148,6 +177,19 @@ export function parseURDF(urdfString) {
 
     const name = extractAttr(jointHeader, 'name') || `joint_${parsedJoints.length + 1}`;
     const typeStr = (extractAttr(jointHeader, 'type') || 'revolute').toLowerCase();
+
+    if (name === 'joint_ee_fixed' && !toolConfigMatch) {
+      const eeOriginMatch = /<origin\b([\s\S]*?)\/?>/i.exec(jointBody);
+      if (eeOriginMatch) {
+        const eeRpyStr = extractAttr(eeOriginMatch[1], 'rpy');
+        if (eeRpyStr) {
+          const rads = eeRpyStr.trim().split(/\s+/).map(Number);
+          if (rads.length === 3 && rads.every(Number.isFinite)) {
+            parsedOffsetRpy = rads.map(v => round(v * RAD2DEG, 2));
+          }
+        }
+      }
+    }
 
     // Skip fixed joints like base-to-world or end-effector
     if (typeStr === 'fixed' || name.toLowerCase().includes('fixed') || name.toLowerCase().includes('tool')) {
@@ -213,6 +255,17 @@ export function parseURDF(urdfString) {
 
   if (parsedJoints.length === 0) {
     throw new Error('Nenhuma junta móvel (revolute/prismatic) encontrada no arquivo URDF.');
+  }
+
+  if (parsedToolType || parsedOffsetRpy.some(v => Math.abs(v) > 1e-6)) {
+    Object.defineProperty(parsedJoints, 'toolConfig', {
+      value: {
+        toolType: parsedToolType || 'gripper',
+        toolOffsetRpy: parsedOffsetRpy,
+      },
+      enumerable: false,
+      configurable: true,
+    });
   }
 
   return parsedJoints;

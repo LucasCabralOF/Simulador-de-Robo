@@ -8,6 +8,11 @@ async function number(page, label, value) {
   await input.press('Tab');
 }
 
+async function pickOption(page, label, optionText) {
+  await page.getByRole('combobox', { name: label, exact: true }).click();
+  await page.getByRole('option', { name: optionText, exact: true }).click();
+}
+
 async function pixels(page) {
   return page.locator('canvas').evaluate(canvas => {
     const gl = canvas.getContext('webgl2');
@@ -79,11 +84,11 @@ test('numerical workflows, persistence, responsive layout and interactive WebGL'
 
   await page.getByRole('button', { name: 'Diferencial', exact: true }).click();
   await expect(page.getByText('Tarefa localmente controlável.', { exact: true })).toBeVisible();
-  await page.getByLabel('Tarefa', { exact: true }).selectOption('position');
+  await pickOption(page, 'Tarefa', 'Posição XYZ');
   await expect(page.getByText('Posto reduzido:', { exact: false })).toBeVisible();
-  await page.getByLabel('Tarefa', { exact: true }).selectOption('pose');
+  await pickOption(page, 'Tarefa', 'Pose XYZ + orientação');
   await expect(page.getByText('Graus de liberdade insuficientes', { exact: false })).toBeVisible();
-  await page.getByLabel('Tarefa', { exact: true }).selectOption('xy');
+  await pickOption(page, 'Tarefa', 'Posição XY');
   await number(page, 'q̇1 (rad/s)', 1);
   await page.getByRole('button', { name: 'Aplicar passo', exact: true }).click();
   await expect(page.locator('.notice[role="status"]')).toContainText('Passo de 0.1 s aplicado');
@@ -97,14 +102,38 @@ test('numerical workflows, persistence, responsive layout and interactive WebGL'
   await number(page, 'Alvo Y (u)', 2);
   await page.getByRole('button', { name: 'Resolver', exact: true }).click();
   await expect(page.locator('.notice[role="status"]')).toContainText('Solução convergiu');
-  await page.getByRole('button', { name: 'Aplicar solução', exact: true }).click();
   await expect(page.getByTestId('end-position')).toContainText('X 4.00 · Y 2.00 · Z 0.00');
+  await expect(page.locator('.waypoint-item')).toHaveCount(3);
+  await page.getByRole('button', { name: 'Salvar este ponto na trajetória', exact: true }).click();
+  await expect(page.locator('.waypoint-item')).toHaveCount(4);
+  await expect(page.locator('.notice[role="status"]')).toContainText('salvo na trajetória');
   await number(page, 'Alvo X (u)', 1000);
   await page.getByRole('button', { name: 'Resolver', exact: true }).click();
   await expect(page.locator('.notice[role="status"]')).toContainText('Não convergiu');
-  await expect(page.getByRole('button', { name: 'Aplicar solução', exact: true })).toBeDisabled();
+  await expect(page.getByTestId('end-position')).toContainText('X 4.00 · Y 2.00 · Z 0.00');
+  await expect(page.getByRole('button', { name: 'Salvar este ponto na trajetória', exact: true })).toBeDisabled();
   await number(page, 'Alvo X (u)', 4);
   await expect(page.getByRole('heading', { name: 'Resultado', exact: true })).toHaveCount(0);
+  await page.getByRole('checkbox', { name: 'Resolver e aplicar automaticamente ao editar alvo' }).check();
+  await number(page, 'Alvo Y (u)', 1);
+  await expect(page.getByTestId('end-position')).toContainText('X 4.00 · Y 1.00 · Z 0.00');
+  const xSlider = page.getByRole('slider', { name: 'Deslizar Alvo X (u)', exact: true });
+  await expect(xSlider).toBeVisible();
+  expect(Number(await xSlider.getAttribute('max'))).toBeCloseTo(15, 0);
+  await xSlider.fill('3');
+  await expect(page.getByTestId('end-position')).toContainText('X 3.00 · Y 1.00 · Z 0.00');
+  await number(page, 'Alvo Y (u)', 12);
+  await expect(page.getByTestId('end-position')).toContainText('X 3.00 · Y 12.00 · Z 0.00');
+  expect(Number(await xSlider.getAttribute('max'))).toBeLessThan(9.5);
+  expect(Number(await xSlider.getAttribute('max'))).toBeGreaterThan(8.5);
+  const xMax = await xSlider.getAttribute('max');
+  const xMin = await xSlider.getAttribute('min');
+  await xSlider.fill(String(xMax));
+  await expect(page.getByRole('spinbutton', { name: 'Alvo Y (u)', exact: true })).toHaveValue('12');
+  await expect(page.getByTestId('end-position')).toContainText('Y 12.00 · Z 0.00');
+  await xSlider.fill(String(xMin));
+  await expect(page.getByRole('spinbutton', { name: 'Alvo Y (u)', exact: true })).toHaveValue('12');
+  await expect(page.getByTestId('end-position')).toContainText('Y 12.00 · Z 0.00');
   await page.screenshot({ path: info.outputPath('inverse.png'), fullPage: true });
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -194,8 +223,7 @@ test('preset selection, 3D workspace calculation, and code export work seamlessl
   await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
 
   // Test loading SCARA preset
-  const presetSelect = page.getByRole('combobox', { name: 'Selecionar preset industrial' });
-  await presetSelect.selectOption('scara');
+  await pickOption(page, 'Selecionar preset industrial', 'SCARA (RRPR) (4 DOF)');
   await expect(page.locator('.notice[role="status"]')).toContainText('Robô SCARA (RRPR) carregado.');
   await expect(page.locator('.sidebar')).toContainText('4 juntas');
 
@@ -248,6 +276,33 @@ test('trajectory sequencer, playback timeline, and 3D path trail operate correct
   // Test stopping and seeking to zero
   await page.getByRole('button', { name: 'Parar e reiniciar timeline' }).click();
   await expect(page.locator('.timeline-slider-row span').first()).toHaveText('0.00 s');
+
+  // Verify kinematic profile charts, metric switching, joint toggling, and chart playhead scrubbing
+  const chart = page.getByTestId('trajectory-kinematic-chart');
+  await expect(chart).toBeVisible();
+  await expect(chart.locator('[data-series-key="j-0"]')).toBeVisible();
+  await expect(chart.locator('[data-series-key="j-1"]')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Velocidade q̇(t)', exact: true }).click();
+  await expect(page.locator('.chart-stats')).toContainText('Pico |q̇| (R)');
+
+  await page.getByRole('button', { name: 'Aceleração q̈(t)', exact: true }).click();
+  await expect(page.locator('.chart-stats')).toContainText('Pico |q̈| (R)');
+
+  await page.getByRole('button', { name: 'Vel. TCP |v|', exact: true }).click();
+  await expect(chart.locator('[data-series-key="tcp"]')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Posição q(t)', exact: true }).click();
+  await page.getByRole('button', { name: /J1 \(R\)/ }).click();
+  await expect(chart.locator('[data-series-key="j-0"]')).toHaveCount(0);
+  await page.getByRole('button', { name: /J1 \(R\)/ }).click();
+  await expect(chart.locator('[data-series-key="j-0"]')).toBeVisible();
+
+  // Clicking near the middle of the SVG chart seeks playTime smoothly away from 0.00 s
+  const box = await chart.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.click(box.x + box.width * 0.55, box.y + box.height * 0.5);
+  await expect(page.locator('.timeline-slider-row span').first()).not.toHaveText('0.00 s');
 });
 
 test('public link sharing and academic report generation operate properly', async ({ page }) => {
@@ -301,5 +356,227 @@ test('URDF export/import workflows and STL CAD tool attachments work properly', 
 
   // Verify STL CAD upload button exists in scene toolbar
   await expect(page.locator('label[aria-label="Carregar malha STL"]')).toBeVisible();
+});
+
+test('joint control interval limits auto-clamp positions, update IK slider bounds, and constrain solver', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
+
+  // Model tab: tightening max below current q2 (5 u) clamps q2 automatically to 3
+  await number(page, 'Máx. 2 (u)', 3);
+  await expect(page.locator('.notice[role="status"]')).toContainText('posição ajustada para J2 (3.00 u)');
+  await expect(page.getByRole('spinbutton', { name: 'q2 (u)', exact: true })).toHaveValue('3');
+
+  // Switch to Inverse tab and inspect joint control limits + Cartesian slider bounds
+  await page.getByRole('button', { name: 'Inversa', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Limites de controle das juntas (R / P)' })).toBeVisible();
+  await expect(page.locator('.ik-joint-limit-card').nth(1)).toContainText('No limite');
+  const xSlider = page.getByRole('slider', { name: 'Deslizar Alvo X (u)', exact: true });
+  expect(Number(await xSlider.getAttribute('max'))).toBeLessThan(8.2);
+  expect(Number(await xSlider.getAttribute('max'))).toBeGreaterThan(7.2);
+
+  // Restrict rotational joint 1 interval in Inversa and verify Cartesian Y bound tightens too
+  await number(page, 'Limite mín. J1 (°)', -100);
+  await number(page, 'Limite máx. J1 (°)', 100);
+  const ySlider = page.getByRole('slider', { name: 'Deslizar Alvo Y (u)', exact: true });
+  expect(Number(await ySlider.getAttribute('max'))).toBeLessThan(7);
+
+  // Solve a reachable target within constrained bounds and verify joints obey [min, max]
+  await number(page, 'Alvo X (u)', 7.5);
+  await number(page, 'Alvo Y (u)', 0);
+  await page.getByRole('button', { name: 'Resolver', exact: true }).click();
+  await expect(page.locator('.notice[role="status"]')).toContainText('Solução convergiu');
+  await expect(page.getByTestId('end-position')).toContainText('X 7.50 · Y 0.00 · Z 0.00');
+  expect(Number(await xSlider.getAttribute('max'))).toBeCloseTo(8, 1);
+  const q1Text = await page.locator('.ik-joint-limit-card').nth(0).locator('output').textContent();
+  const q2Text = await page.locator('.ik-joint-limit-card').nth(1).locator('output').textContent();
+  const q1Val = Number(q1Text.match(/=\s*(-?[\d.]+)/)[1]);
+  const q2Val = Number(q2Text.match(/=\s*(-?[\d.]+)/)[1]);
+  expect(q1Val).toBeGreaterThanOrEqual(-100);
+  expect(q1Val).toBeLessThanOrEqual(100);
+  expect(q2Val).toBeGreaterThanOrEqual(0);
+  expect(q2Val).toBeLessThanOrEqual(3);
+
+  // Target outside constrained prismatic max reach (8 u) must not converge or alter valid q2
+  await number(page, 'Alvo X (u)', 12);
+  await number(page, 'Alvo Y (u)', 0);
+  await page.getByRole('button', { name: 'Resolver', exact: true }).click();
+  await expect(page.locator('.notice[role="status"]')).toContainText('Não convergiu');
+  await expect(page.getByTestId('end-position')).toContainText('X 7.50 · Y 0.00 · Z 0.00');
+  await expect(page.locator('.ik-joint-limit-card').nth(1).locator('output')).toContainText(`q2 = ${q2Val.toFixed(2)} u`);
+});
+
+test('self-collision prevention blocks tunneling across links and notifies user', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
+
+  // Attempt to jump q3 from 30 deg across 90 deg (link fold) to 120 deg
+  await number(page, 'q3 (°)', 120);
+  await expect(page.locator('.notice[role="status"]')).toContainText('Autocolisão detectada');
+  await expect(page.locator('.collision-readout-pill')).toContainText('Bloqueio de colisão');
+  const q3Val = Number(await page.getByRole('spinbutton', { name: 'q3 (°)', exact: true }).inputValue());
+  expect(q3Val).toBeGreaterThan(80);
+  expect(q3Val).toBeLessThan(83);
+
+  // Pulling q3 back to a safe angle (20 deg) clears the collision warning
+  await number(page, 'q3 (°)', 20);
+  await expect(page.locator('.collision-readout-pill')).toHaveCount(0);
+  await expect(page.getByRole('spinbutton', { name: 'q3 (°)', exact: true })).toHaveValue('20');
+});
+
+test('sliding UR5 target sliders to extremes keeps transverse fixed coordinates locked', async ({ page }) => {
+  await page.goto('/');
+  await pickOption(page, 'Selecionar preset industrial', 'Universal Cobot UR5 (6R) (6 DOF)');
+  await page.getByRole('button', { name: 'Inversa', exact: true }).click();
+
+  const xInput = page.getByRole('spinbutton', { name: 'Alvo X (u)', exact: true });
+  const yInput = page.getByRole('spinbutton', { name: 'Alvo Y (u)', exact: true });
+  const zInput = page.getByRole('spinbutton', { name: 'Alvo Z (u)', exact: true });
+  const xSlider = page.getByRole('slider', { name: 'Deslizar Alvo X (u)', exact: true });
+  const zSlider = page.getByRole('slider', { name: 'Deslizar Alvo Z (u)', exact: true });
+
+  const initialY = await yInput.inputValue();
+  const initialZ = await zInput.inputValue();
+
+  // Jam X slider to min and max extremes: fixed Y and Z must remain invariant
+  const xMin = await xSlider.getAttribute('min');
+  await xSlider.fill(String(xMin));
+  expect(Number(await yInput.inputValue())).toBeCloseTo(Number(initialY), 4);
+  expect(Number(await zInput.inputValue())).toBeCloseTo(Number(initialZ), 4);
+
+  const xMax = await xSlider.getAttribute('max');
+  await xSlider.fill(String(xMax));
+  expect(Number(await yInput.inputValue())).toBeCloseTo(Number(initialY), 4);
+  expect(Number(await zInput.inputValue())).toBeCloseTo(Number(initialZ), 4);
+
+  // Move Z slider to its max extreme: fixed X and Y must remain invariant
+  const fixedX = await xInput.inputValue();
+  const fixedY = await yInput.inputValue();
+  const zMax = await zSlider.getAttribute('max');
+  await zSlider.fill(String(zMax));
+  expect(Number(await xInput.inputValue())).toBeCloseTo(Number(fixedX), 4);
+  expect(Number(await yInput.inputValue())).toBeCloseTo(Number(fixedY), 4);
+});
+
+test('customizable industrial tool selector and always-available tool orientation work end-to-end', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Ferramenta do efetuador (TCP)' })).toBeVisible();
+
+  // Switch between the 3 industrial tool types on Model tab
+  await page.getByRole('button', { name: 'Ventosa a Vácuo', exact: true }).click();
+  await expect(page.locator('.scene-readout')).toContainText('Ventosa a Vácuo');
+  await page.getByRole('button', { name: 'Tocha de Solda', exact: true }).click();
+  await expect(page.locator('.scene-readout')).toContainText('Tocha de Solda');
+
+  // Switch to UR5 6-DOF robot and Inverse tab
+  await pickOption(page, 'Selecionar preset industrial', 'Universal Cobot UR5 (6R) (6 DOF)');
+  await page.getByRole('button', { name: 'Inversa', exact: true }).click();
+
+  // Orientation controls are visible immediately even when starting in 'position' mode
+  const pitchSlider = page.getByRole('slider', { name: 'Deslizar Pitch alvo (°)', exact: true });
+  await expect(pitchSlider).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Tarefa', exact: true })).toContainText('Posição XYZ');
+
+  // Using an orientation preset automatically promotes task mode to Pose XYZ + orientação and solves cleanly
+  await page.getByRole('button', { name: 'Vertical -90°', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Tarefa', exact: true })).toContainText('Pose XYZ + orientação');
+  await expect(page.locator('.notice[role="status"]')).toContainText('Solução convergiu');
+  await expect(page.locator('.scene-readout')).toContainText('RPY [0.0°, -90.0°, 0.0°]');
+});
+
+test('interactive 3D target gizmo toggles translate and rotate modes cleanly without console errors', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', err => errors.push(err.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Inversa', exact: true }).click();
+
+  const sidebarGizmoToggle = page.getByRole('checkbox', { name: 'Gizmo 3D interativo', exact: true });
+  const toolbarGizmoToggle = page.getByRole('checkbox', { name: 'Gizmo 3D', exact: true });
+  await expect(sidebarGizmoToggle).toBeChecked();
+  await expect(toolbarGizmoToggle).toBeChecked();
+  await expect(page.getByRole('button', { name: 'Mover no 3D (XYZ)', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  const beforeGizmoToggle = await pixels(page);
+  await toolbarGizmoToggle.uncheck();
+  await expect(sidebarGizmoToggle).not.toBeChecked();
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(beforeGizmoToggle.checksum);
+
+  await sidebarGizmoToggle.check();
+  await expect(toolbarGizmoToggle).toBeChecked();
+  await page.getByRole('button', { name: 'Girar no 3D (RPY)', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Girar no 3D (RPY)', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('combobox', { name: 'Tarefa', exact: true })).toContainText('Pose XYZ + orientação');
+
+  expect(errors).toEqual([]);
+});
+
+test('environment collision detects elevated workbench floor and blocks motion through 3D obstacles', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Ambiente e Colisão Externa (Piso / Obstáculo 3D)' })).toBeVisible();
+
+  // Position a 1.0u sphere obstacle ahead along the RPR sweep path at [4, 3, 0]
+  await page.getByRole('button', { name: 'Posicionar à frente do efetuador', exact: true }).click();
+  await expect(page.locator('.scene-toolbar').getByRole('checkbox', { name: 'Obstáculo 3D', exact: true })).toBeChecked();
+  await number(page, 'Obstáculo X (u)', 4);
+  await number(page, 'Obstáculo Y (u)', 3);
+  await number(page, 'Obstáculo Z (u)', 0);
+  await number(page, 'Raio / Tamanho (u)', 1);
+  await expect(page.locator('.collision-readout-pill')).toHaveCount(0);
+
+  // Trying to swing q1 across [4, 3, 0] gets blocked safely at the obstacle boundary
+  await number(page, 'q1 (°)', 110);
+  await expect(page.locator('.notice[role="status"]')).toContainText('Obstáculo 3D');
+  await expect(page.locator('.collision-readout-pill')).toContainText('Obstáculo 3D');
+  const stoppedQ1 = Number(await page.getByRole('spinbutton', { name: 'q1 (°)', exact: true }).inputValue());
+  expect(stoppedQ1).toBeGreaterThan(45);
+  expect(stoppedQ1).toBeLessThan(85);
+
+  // Switch shape to Box and then reset environment
+  await page.getByRole('button', { name: 'Caixa 3D (Cubo)', exact: true }).click();
+  await page.getByRole('button', { name: 'Restaurar ambiente padrão', exact: true }).click();
+  await expect(page.locator('.collision-readout-pill')).toHaveCount(0);
+
+  // Raising workbench floor Z to 0.5 u detects floor collision with planar RPR links at Z = 0
+  await number(page, 'Nível do piso Z (u)', 0.5);
+  await expect(page.locator('.collision-readout-pill')).toContainText('piso/bancada');
+  await page.getByRole('button', { name: 'Restaurar ambiente padrão', exact: true }).click();
+  await expect(page.locator('.collision-readout-pill')).toHaveCount(0);
+});
+
+test('tool configuration (TCP) synchronizes across exported code, URDF, report summary, and SQLite save/load', async ({ page }, info) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Tocha de Solda', exact: true }).click();
+  await number(page, 'Offset Pitch (°)', -45);
+
+  const simName = `tcp-sync-${info.project.name}`;
+  await page.getByRole('textbox', { name: 'Nome da simulação' }).fill(simName);
+  await page.getByRole('button', { name: 'Salvar', exact: true }).click();
+  await expect(page.getByRole('button', { name: `Carregar ${simName}`, exact: true })).toBeVisible();
+
+  // Exported C++, Python, ROS2, and URDF reflect welder tool and offset
+  await page.getByRole('button', { name: 'Código', exact: true }).click();
+  await expect(page.locator('.code-block')).toContainText('TOOL_TYPE = "welder"');
+  await expect(page.locator('.code-block')).toContainText('{0f, -45f, 0f}');
+  await page.getByRole('button', { name: 'URDF (ROS)', exact: true }).click();
+  await expect(page.locator('.code-block')).toContainText('<tool_config type="welder" offset_rpy="0 -45 0"/>');
+  await expect(page.locator('.code-block')).toContainText('<link name="tcp_link"/>');
+
+  // Academic report summary shows active tool and TCP coordinates
+  await page.getByRole('button', { name: 'Relatório', exact: true }).click();
+  await expect(page.locator('.readings')).toContainText('Tocha de Solda');
+  await expect(page.locator('.readings')).toContainText('Posição do TCP (u)');
+
+  // Reloading saved simulation restores the tool even after switching back to default gripper
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  await page.getByRole('button', { name: 'Restaurar ferramenta padrão', exact: true }).click();
+  await expect(page.locator('.scene-readout')).toContainText('Garra Paralela');
+  await page.getByRole('button', { name: `Carregar ${simName}`, exact: true }).click();
+  await expect(page.locator('.scene-readout')).toContainText('Tocha de Solda');
+  await expect(page.getByRole('spinbutton', { name: 'Offset Pitch (°)', exact: true })).toHaveValue('-45');
+
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: `Apagar ${simName}`, exact: true }).click();
 });
 

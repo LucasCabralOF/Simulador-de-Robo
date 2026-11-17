@@ -37,7 +37,12 @@ test('isolated SQLite CRUD, validation, legacy compatibility and error responses
   const shareRes = await fetch(`${base}/share`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Robo Publico', data: original, waypoints: [{ id: 1, q: [10, 20] }] }),
+    body: JSON.stringify({
+      name: 'Robo Publico',
+      data: original,
+      waypoints: [{ id: 1, q: [10, 20] }],
+      toolConfig: { toolType: 'welder', toolOffsetRpy: [15, -45, 0], toolGrip: 90 },
+    }),
   });
   assert.equal(shareRes.status, 201);
   const { slug, shareUrl } = await shareRes.json();
@@ -52,7 +57,19 @@ test('isolated SQLite CRUD, validation, legacy compatibility and error responses
   assert.equal(sharedData.name, 'Robo Publico');
   assert.equal(sharedData.slug, slug);
   assert.deepEqual(sharedData.waypoints, [{ id: 1, q: [10, 20] }]);
+  assert.deepEqual(sharedData.toolConfig, { toolType: 'welder', toolOffsetRpy: [15, -45, 0], toolGrip: 90 });
   assert.deepEqual(sharedData.data, DEFAULT_JOINTS);
+
+  // Test saving and retrieving toolConfig directly on CRUD endpoint
+  const toolSave = await save({
+    name: 'Model With Vacuum',
+    data: original,
+    toolConfig: { toolType: 'vacuum', toolOffsetRpy: [0, 90, 0], toolGrip: 65 },
+  });
+  assert.equal(toolSave.status, 201);
+  const toolSaved = await toolSave.json();
+  const loadedToolSim = await (await fetch(`${base}/${toolSaved.id}`)).json();
+  assert.deepEqual(loadedToolSim.toolConfig, { toolType: 'vacuum', toolOffsetRpy: [0, 90, 0], toolGrip: 65 });
 
   assert.equal((await fetch(`${apiRoot}/share/invalid-slug`)).status, 400);
   assert.equal((await fetch(`${apiRoot}/share/rob-00000000`)).status, 404);

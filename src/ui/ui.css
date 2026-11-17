@@ -1,0 +1,601 @@
+/* Shared Ant Design Dark UI primitives */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: var(--control-height);
+  padding: 0 12px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius);
+  background: var(--bg-button);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ui-btn:hover:not(:disabled) {
+  background: var(--bg-button-hover);
+  border-color: var(--border-hover);
+}
+
+.ui-btn:active:not(:disabled) {
+  background: #22282d;
+}
+
+.ui-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.ui-btn-primary {
+  background: #147d67;
+  border-color: #279d84;
+  color: #ffffff;
+}
+
+.ui-btn-primary:hover:not(:disabled) {
+  background: #198d75;
+  border-color: #32b89b;
+}
+
+.ui-btn-primary:active:not(:disabled) {
+  background: #116b58;
+}
+
+.ui-btn-icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+.ui-btn-icon:hover:not(:disabled) {
+  background: var(--bg-button);
+  border-color: transparent;
+}
+
+.ui-btn-danger {
+  color: #fa8c9b;
+}
+
+.ui-btn-danger:hover:not(:disabled) {
+  background: rgba(250, 140, 155, 0.12);
+  border-color: rgba(250, 140, 155, 0.35);
+}
+
+.ui-btn-block {
+  width: 100%;
+}
+
+.ui-btn:focus-visible,
+.ui-btn:has(:focus-visible),
+.ui-input:focus-visible,
+.ui-select-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Navbar (Main Tab Navigation) */
+.ui-navbar {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.ui-navbar-tab {
+  flex: 1;
+  min-width: fit-content;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 10px 7px;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.ui-navbar-tab:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ui-navbar-tab[aria-current="page"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.ui-navbar-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Segmented Tabs (Ant Design Segmented style) */
+.ui-segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px;
+  margin: 14px 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ui-segmented-item {
+  flex: 1 1 0;
+  min-width: max-content;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.ui-segmented-item:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ui-segmented-item[aria-current="page"] {
+  background: #147d67;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.ui-segmented-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Inputs & NumberField */
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  min-width: 0;
+}
+
+.ui-input {
+  width: 100%;
+  min-width: 0;
+  height: var(--control-height);
+  background: var(--bg-input);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius);
+  color: var(--text-main);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ui-input:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+
+.ui-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(98, 213, 181, 0.16);
+}
+
+.ui-input-number {
+  font-family: Consolas, monospace;
+  font-size: 13px;
+}
+
+.ui-input.compact {
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+/* Ant Design Dark Select */
+.ui-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: var(--control-height);
+  padding: 0 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ui-select-trigger:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.ui-select-trigger.open {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(98, 213, 181, 0.2);
+}
+
+.ui-select-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.ui-select-trigger.compact {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.ui-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-select-value.placeholder {
+  color: var(--text-muted);
+}
+
+.ui-select-arrow {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.18s ease, color 0.18s ease;
+}
+
+.ui-select-trigger.open .ui-select-arrow {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+.ui-select-dropdown {
+  position: fixed;
+  z-index: 1000;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: #1f262b;
+  border: 1px solid #3a434a;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.48), 0 3px 6px rgba(0, 0, 0, 0.32);
+  overflow-y: auto;
+  animation: uiSelectFadeIn 0.12s cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes uiSelectFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ui-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text-main);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.ui-select-dropdown.compact .ui-select-option {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.ui-select-option.active {
+  background: #2b343c;
+}
+
+.ui-select-option.selected {
+  background: rgba(98, 213, 181, 0.14);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ui-select-option.selected.active {
+  background: rgba(98, 213, 181, 0.22);
+}
+
+.ui-select-option.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ui-select-option-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ui-select-check {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+/* Custom Brand-Consistent Range Slider (separate WebKit / Firefox rules) */
+.ui-slider {
+  --slider-track-size: 5px;
+  --slider-thumb-size: 15px;
+  --slider-track-color: #363f46;
+  --slider-fill-color: var(--accent);
+  --slider-thumb-color: #eef2f2;
+  --slider-progress: 0%;
+
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ui-slider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ui-slider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.ui-slider::-webkit-slider-runnable-track {
+  height: var(--slider-track-size);
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--slider-fill-color) var(--slider-progress),
+    var(--slider-track-color) var(--slider-progress)
+  );
+}
+
+.ui-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--slider-thumb-size);
+  height: var(--slider-thumb-size);
+  margin-block-start: calc((var(--slider-track-size) - var(--slider-thumb-size)) / 2);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: #171b1e;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+
+.ui-slider:hover:not(:disabled)::-webkit-slider-thumb {
+  transform: scale(1.12);
+  background: var(--accent);
+}
+
+.ui-slider::-moz-range-track {
+  height: var(--slider-track-size);
+  border: 0;
+  border-radius: 999px;
+  background: var(--slider-track-color);
+}
+
+.ui-slider::-moz-range-progress {
+  height: var(--slider-track-size);
+  border-radius: 999px;
+  background: var(--slider-fill-color);
+}
+
+.ui-slider::-moz-range-thumb {
+  width: var(--slider-thumb-size);
+  height: var(--slider-thumb-size);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: #171b1e;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+
+.ui-slider:hover:not(:disabled)::-moz-range-thumb {
+  transform: scale(1.12);
+  background: var(--accent);
+}
+
+/* Ant Design Dark Checkbox */
+.ui-checkbox {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ui-checkbox-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.ui-checkbox-box {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-hover);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: #171b1e;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.ui-checkbox:hover .ui-checkbox-box {
+  border-color: var(--accent);
+}
+
+.ui-checkbox-input:checked + .ui-checkbox-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ui-checkbox:has(.ui-checkbox-input:focus-visible) .ui-checkbox-box {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ui-checkbox-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Notice / Alert */
+.ui-notice {
+  padding: 10px 12px;
+  margin: 12px 0;
+  border-left: 3px solid #d8ae54;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: #302d25;
+  color: #f2dcae;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.ui-notice.success {
+  border-color: #42b89b;
+  color: #b6ebda;
+  background: #20332e;
+}
+
+.ui-notice.error {
+  border-color: #f17d8b;
+  color: #ffc4cd;
+  background: #3b292d;
+}
+
+.ui-notice .ui-btn {
+  margin: 8px 0 0 10px;
+}
+
+/* MatrixView Card */
+.ui-matrix {
+  margin: 16px 0;
+  min-width: 0;
+}
+
+.ui-matrix figcaption {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.ui-matrix-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.ui-matrix-box table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: right;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+
+.ui-matrix-box th,
+.ui-matrix-box td {
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.ui-matrix-box tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ui-matrix-box th {
+  color: var(--text-muted);
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ui-matrix-box td {
+  min-width: 72px;
+  color: #bfe7dc;
+}
+
+.visually-hidden {
+  position: absolute;
+  clip-path: inset(50%);
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 800px) {
+  .ui-segmented-item {
+    flex: 1 1 45%;
+  }
+}
