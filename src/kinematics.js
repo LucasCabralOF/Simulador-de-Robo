@@ -150,6 +150,11 @@ export function hexToHsl(hex) {
     l: Math.round(l * 100),
   };
 }
+/**
+ * Normalizes and clamps custom 3D robot geometry and color styling, including per-joint overrides.
+ * @param {Partial<import('./types.js').ModelStyle> | null | undefined} raw
+ * @returns {import('./types.js').ModelStyle}
+ */
 export function normalizeModelStyle(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const linkShape = typeof src.linkShape === 'string' && LINK_SHAPES[src.linkShape]
@@ -382,6 +387,12 @@ const _vDelta = new Vector3();
 const _vLinear = new Vector3();
 const _vScratch = new Vector3();
 
+/**
+ * Computes standard DH forward kinematics, intermediate link transforms, positions, and 6xN geometric Jacobian.
+ * @param {import('./types.js').Joint[]} joints
+ * @param {{ includeOrientation?: boolean }} [options]
+ * @returns {import('./types.js').ForwardKinematicsResult}
+ */
 export function forwardKinematics(joints, { includeOrientation = true } = {}) {
   const total = new Matrix4();
   const transforms = [total.clone()];
@@ -578,6 +589,14 @@ export function extractRobotGeometry(joints, fk = forwardKinematics(joints), too
   return { origins, segments, gripTip };
 }
 
+/**
+ * Checks 3D self-collision rules (jackknife folding, link crossings, motor/base hits) and environment limits.
+ * @param {import('./types.js').Joint[]} joints
+ * @param {import('./types.js').ForwardKinematicsResult | null} [precomputedFk]
+ * @param {import('./types.js').ToolType} [toolType]
+ * @param {import('./types.js').EnvironmentConfig | null} [environment]
+ * @returns {import('./types.js').CollisionInfo}
+ */
 export function detectSelfCollision(joints, precomputedFk = null, toolType = 'gripper', environment = null) {
   if (!Array.isArray(joints) || joints.length === 0) {
     return { colliding: false, pairs: [], point: null, message: '' };
@@ -1092,6 +1111,13 @@ function collectFallbackPositionBranches(initial, flangeTarget, existingBranches
   return extras;
 }
 
+/**
+ * Enumerates all joint-valid, collision-free closed-form posture branches for analytical architectures.
+ * @param {import('./types.js').Joint[]} input
+ * @param {import('./types.js').CartesianTarget} target
+ * @param {{ mode?: import('./types.js').TaskMode, length?: number, tolerance?: number, toolType?: import('./types.js').ToolType, toolOffsetRpy?: import('./types.js').RpyDeg | null, environment?: import('./types.js').EnvironmentConfig | null }} [options]
+ * @returns {{ architecture: string | null, currentPosture: Record<string, string> | null, axes: any[], branches: import('./types.js').PostureBranch[] }}
+ */
 export function listPostureBranches(input, target, {
   mode = 'position',
   length = 5,
@@ -1139,6 +1165,13 @@ export function listPostureBranches(input, target, {
   };
 }
 
+/**
+ * Solves inverse kinematics using closed-form branches when available, falling back to constrained DLS.
+ * @param {import('./types.js').Joint[]} input
+ * @param {import('./types.js').CartesianTarget} target
+ * @param {{ mode?: import('./types.js').TaskMode, length?: number, damping?: number, maxIterations?: number, tolerance?: number, maxSeeds?: number, toolType?: import('./types.js').ToolType, environment?: import('./types.js').EnvironmentConfig | null, posture?: import('./types.js').PosturePreference | null, strictPosture?: boolean | null, preferAnalytical?: boolean, continuityToleranceDeg?: number | null }} [options]
+ * @returns {import('./types.js').InverseKinematicsResult}
+ */
 export function inverseKinematics(input, target, {
   mode = 'position',
   length = 5,
@@ -1310,6 +1343,10 @@ export function inverseKinematics(input, target, {
  * Solves IK warm-started from `inputJoints` for interactive 3D gizmo dragging,
  * returning the actual achievable position and tool RPY clamped to joint limits,
  * workspace boundaries, and collision constraints (floor / obstacle / self-collision).
+ * @param {import('./types.js').Joint[]} inputJoints
+ * @param {import('./types.js').CartesianTarget} target
+ * @param {{ mode?: import('./types.js').TaskMode, length?: number, damping?: number, maxIterations?: number, toolType?: import('./types.js').ToolType, toolOffsetRpy?: import('./types.js').RpyDeg, environment?: import('./types.js').EnvironmentConfig | null, lockPosition?: boolean, lockOrientation?: boolean, posture?: import('./types.js').PosturePreference | null }} [options]
+ * @returns {{ joints: import('./types.js').Joint[], position: import('./types.js').Vec3, rpy: import('./types.js').RpyDeg, converged: boolean, iterations: number, error: number, residual: number[], blocked: boolean, solver?: string, architecture?: string | null, posture?: Record<string, string> | null }}
  */
 export function solveBoundedTarget(inputJoints, target, {
   mode = 'position',

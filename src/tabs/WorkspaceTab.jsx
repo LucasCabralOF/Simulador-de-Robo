@@ -26,6 +26,7 @@ const WorkspaceTab = memo(function WorkspaceTab({
                 { value: 1000, label: '1.000 pontos (Rápido)' },
                 { value: 2500, label: '2.500 pontos (Equilibrado)' },
                 { value: 5000, label: '5.000 pontos (Alta densidade)' },
+                { value: 10000, label: '10.000 pontos (Máxima densidade · Worker)' },
               ]}
             />
           </label>

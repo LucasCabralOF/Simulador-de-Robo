@@ -7,7 +7,7 @@ import { Vector3 } from 'three';
  * @param {ArrayBuffer} arrayBuffer - Raw file buffer from FileReader
  * @returns {import('three').BufferGeometry} Normalized BufferGeometry ready for rendering
  */
-export function parseStlBuffer(arrayBuffer) {
+export function parseStlBuffer(arrayBuffer, { targetSize = 0.6 } = {}) {
   const loader = new STLLoader();
   const geometry = loader.parse(arrayBuffer);
 
@@ -17,8 +17,9 @@ export function parseStlBuffer(arrayBuffer) {
   box.getSize(size);
 
   const maxDim = Math.max(size.x, size.y, size.z);
+  const safeTarget = Number.isFinite(Number(targetSize)) && Number(targetSize) > 0 ? Number(targetSize) : 0.6;
   if (maxDim > 0) {
-    const targetScale = 0.6 / maxDim;
+    const targetScale = safeTarget / maxDim;
     geometry.scale(targetScale, targetScale, targetScale);
     geometry.center();
   }

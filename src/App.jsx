@@ -2,16 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import RobotScene from './RobotScene';
 import SceneToolbar from './SceneToolbar';
 import { NumberField } from './ui';
-import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_MODEL_STYLE, DEFAULT_TOOL_OFFSET_RPY, TOOL_TYPES, classifyPosture, computeManipulabilityEllipsoid, computeToolFrame, detectAnalyticalArchitecture, detectSelfCollision, flangeRpyFromToolTarget, forwardKinematics, integrateJoints, inverseKinematics, inverseVelocity, jacobianDiagnostics, listPostureBranches, multiplyVector, normalizeJoints, normalizeModelStyle, rotationFromRPY, solveBoundedTarget, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from './kinematics';
+import { DEFAULT_ENVIRONMENT, DEFAULT_MODEL_STYLE, DEFAULT_TOOL_OFFSET_RPY, TOOL_TYPES, computeManipulabilityEllipsoid, computeToolFrame, detectSelfCollision, forwardKinematics, integrateJoints, inverseVelocity, jacobianDiagnostics, multiplyVector, normalizeJoints, normalizeModelStyle, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from './kinematics';
 import { PRESETS } from './presets';
-import { analyzeRobotSingularities, computeCartesianBounds, generateWorkspaceCloud } from './workspace';
+import { computeCartesianBounds } from './workspace';
 import { generateCpp, generatePython, generateRos2 } from './codeGenerator';
-import { defaultWaypointsForJoints, evaluateTrajectory, sampleTrajectoryPath, syncWaypointsToJoints } from './trajectory';
+import { defaultWaypointsForJoints, syncWaypointsToJoints } from './trajectory';
 import { exportToURDF, parseURDF } from './urdfParser';
 import { parseStlBuffer } from './cadLoader';
 import { fetchSharedSimulation, normalizeEnvironment, request } from './storage';
 import { usePanels } from './hooks/usePanels';
 import { useHistory } from './hooks/useHistory';
+import { useTrajectoryPlayer } from './hooks/useTrajectoryPlayer';
+import { useInverseControl } from './hooks/useInverseControl';
+import { runSingularityAnalysisAsync, runWorkspaceCloudAsync, terminateWorkspaceWorker } from './workers/workspaceClient';
 import { fmt } from './format';
 import ModelTab from './tabs/ModelTab';
 import ProjectsTab from './tabs/ProjectsTab';
@@ -66,14 +69,6 @@ function App() {
   const [wrench, setWrench] = useState([0, 0, 0, 0, 0, 0]);
   const [payloadMass, setPayloadMass] = useState(2);
   const [gravity, setGravity] = useState(10);
-  const [target, setTarget] = useState(() => ({
-    position: [...INITIAL_FK.positions.at(-1)],
-    rpy: [...INITIAL_TOOL_FRAME.orientation.rpy],
-  }));
-  const [solution, setSolution] = useState(null);
-  const [posture, setPosture] = useState('auto');
-  const [autoSolveIk, setAutoSolveIk] = useState(false);
-  const [ikWaypointDuration, setIkWaypointDuration] = useState(2.0);
   const [showFrames, setShowFrames] = useState(true);
   const [viewKey, setViewKey] = useState(0);
   const [viewPreset, setViewPreset] = useState('iso');
@@ -83,23 +78,19 @@ function App() {
   const [showWorkspace, setShowWorkspace] = useState(true);
   const [sampleCount, setSampleCount] = useState(2500);
   const [computingCloud, setComputingCloud] = useState(false);
+  const [singularityReport, setSingularityReport] = useState(null);
+  const [computingSingularities, setComputingSingularities] = useState(false);
   const [codeTarget, setCodeTarget] = useState('cpp');
   const [copied, setCopied] = useState(false);
-  const [waypoints, setWaypoints] = useState(() => defaultWaypointsForJoints(INITIAL_PRESET.joints));
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [playTime, setPlayTime] = useState(0);
-  const playTimeRef = useRef(playTime);
-  useEffect(() => { playTimeRef.current = playTime; }, [playTime]);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
-  const [isLooping, setIsLooping] = useState(false);
-  const [interpType, setInterpType] = useState('quintic');
-  const [angleUnit, setAngleUnit] = useState('deg');
-  const [showTrajectory, setShowTrajectory] = useState(true);
   const [shareUrl, setShareUrl] = useState('');
   const [shareLoading, setShareLoading] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [customStlGeometry, setCustomStlGeometry] = useState(null);
   const [stlFileName, setStlFileName] = useState('');
+  const [customLinkStls, setCustomLinkStls] = useState({});
+  const [urdfMeshHints, setUrdfMeshHints] = useState({});
+  const [showSingularityHighlights, setShowSingularityHighlights] = useState(true);
+  const [hoveredSingularity, setHoveredSingularity] = useState(null);
   const [toolType, setToolType] = useState('gripper');
   const toolTypeRef = useRef(toolType);
   useEffect(() => { toolTypeRef.current = toolType; }, [toolType]);
@@ -115,15 +106,9 @@ function App() {
   }));
   const environmentRef = useRef(environment);
   useEffect(() => { environmentRef.current = environment; }, [environment]);
-  const [showGizmo, setShowGizmo] = useState(true);
   const [showObstacleGizmo, setShowObstacleGizmo] = useState(true);
-  const [gizmoMode, setGizmoMode] = useState('translate');
-  const [gizmoLockOrientation, setGizmoLockOrientation] = useState(false);
-  const [gizmoLockPosition, setGizmoLockPosition] = useState(true);
-  const [isGizmoDragging, setIsGizmoDragging] = useState(false);
-  const [isIkSliderDragging, setIsIkSliderDragging] = useState(false);
   // Any continuous pointer interaction (range sliders in any panel, 3D canvas drags) defers
-  // heavy derived computations (Cartesian slider bounds, undo snapshots) until release.
+  // heavy derived computations (Cartesian slider bounds, singularity workers, undo snapshots) until release.
   const [isPointerInteracting, setIsPointerInteracting] = useState(false);
   useEffect(() => {
     const onDown = (e) => {
@@ -142,28 +127,7 @@ function App() {
       window.removeEventListener('blur', onUp);
     };
   }, []);
-  useEffect(() => {
-    if (!isIkSliderDragging) return undefined;
-    const stop = () => setIsIkSliderDragging(false);
-    window.addEventListener('pointerup', stop);
-    window.addEventListener('pointercancel', stop);
-    return () => {
-      window.removeEventListener('pointerup', stop);
-      window.removeEventListener('pointercancel', stop);
-    };
-  }, [isIkSliderDragging]);
-  const gizmoAnchorPosRef = useRef(null);
-  const gizmoAnchorRpyRef = useRef(null);
   const shortcutsRef = useRef({ undo: () => {}, redo: () => {}, addWaypoint: () => {} });
-  const lastCartesianBoundsRef = useRef(null);
-  const lastSingularityReportRef = useRef(null);
-  const lastPostureInfoRef = useRef(null);
-  const multiSeedFailRef = useRef(null);
-  const handleIkSliderDragStart = useCallback(() => {
-    multiSeedFailRef.current = null;
-    setIsIkSliderDragging(true);
-  }, []);
-  const handleIkSliderDragEnd = useCallback(() => setIsIkSliderDragging(false), []);
   const handleFrameView = useCallback(() => setViewKey(k => k + 1), []);
   const handleSelectObstacle = useCallback(() => setShowObstacleGizmo(true), []);
   const [reportMeta, setReportMeta] = useState({
@@ -189,49 +153,180 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- global bounds depend only on kinematic structure/limits and environment, not joint.val
     [jointStructureKey, environment]
   );
-  const isContinuousMotion = isGizmoDragging || isIkSliderDragging || isPointerInteracting || isPlaying;
-  const cartesianBounds = useMemo(() => {
-    if (!showInverse) return globalCartesianBounds;
-    if (isContinuousMotion && lastCartesianBoundsRef.current) {
-      return lastCartesianBoundsRef.current;
-    }
-    const next = computeCartesianBounds(joints, currentEnd, mode, environment);
-    lastCartesianBoundsRef.current = next;
-    return next;
-  }, [isContinuousMotion, showInverse, joints, currentEnd, mode, environment, globalCartesianBounds]);
+  const syncTargetRef = useRef(null);
+  const commitJointsRef = useRef(null);
+  const onSyncTarget = useCallback((nextTarget) => syncTargetRef.current?.(nextTarget), []);
+  const onCommitJoints = useCallback((nextJoints) => commitJointsRef.current?.(nextJoints), []);
+
+  const {
+    waypoints,
+    setWaypoints,
+    isPlaying,
+    setIsPlaying,
+    stopPlayback,
+    playTime,
+    setPlayTime,
+    playbackSpeed,
+    setPlaybackSpeed,
+    isLooping,
+    setIsLooping,
+    interpType,
+    setInterpType,
+    angleUnit,
+    setAngleUnit,
+    showTrajectory,
+    setShowTrajectory,
+    trajectoryData,
+    ghostJoints,
+    seekTrajectory,
+    addWaypointFromPose,
+    addCurrentWaypoint,
+    removeWaypoint,
+    moveToWaypoint,
+    updateWaypointDuration,
+    toggleTrajectoryPlayback,
+    handleSelectWaypoint,
+  } = useTrajectoryPlayer({
+    initialJoints: INITIAL_PRESET.joints,
+    showGhost,
+    joints,
+    jointsRef,
+    setJoints,
+    toolType,
+    toolTypeRef,
+    toolOffsetRpy,
+    environment,
+    environmentRef,
+    setCollisionAlert,
+    setMessage,
+    onSyncTarget,
+    onCommitJoints,
+  });
+
+  const {
+    target,
+    setTarget,
+    solution,
+    setSolution,
+    posture,
+    setPosture,
+    autoSolveIk,
+    setAutoSolveIk,
+    ikWaypointDuration,
+    setIkWaypointDuration,
+    showGizmo,
+    setShowGizmo,
+    gizmoMode,
+    setGizmoMode,
+    gizmoLockOrientation,
+    setGizmoLockOrientation,
+    gizmoLockPosition,
+    setGizmoLockPosition,
+    isContinuousMotion,
+    cartesianBounds,
+    postureInfo,
+    targetDistance,
+    toolAngularErrorDeg,
+    ikTargetForScene,
+    ikRpyForScene,
+    solveInverse,
+    selectPosture,
+    applyPostureBranch,
+    syncTargetAndModeForJoints,
+    applyOrientationPreset,
+    changeTarget,
+    slideTarget,
+    handleGizmoDragStart,
+    handleGizmoDragEnd,
+    handleGizmoDrag,
+    handleGizmoModeChange,
+    handleIkSliderDragStart,
+    handleIkSliderDragEnd,
+  } = useInverseControl({
+    initialTarget: {
+      position: INITIAL_FK.positions.at(-1),
+      rpy: INITIAL_TOOL_FRAME.orientation.rpy,
+    },
+    joints,
+    jointsRef,
+    setJoints,
+    currentEnd,
+    toolFrame,
+    mode,
+    setMode,
+    length,
+    damping,
+    toolType,
+    toolOffsetRpy,
+    toolScale,
+    environment,
+    tab,
+    showInverse,
+    globalCartesianBounds,
+    isPointerInteracting,
+    isPlaying,
+    stopPlayback,
+    setCollisionAlert,
+    setMessage,
+  });
+
+  const workspaceReqRef = useRef(0);
+  const invalidateWorkspaceCloud = useCallback(() => {
+    workspaceReqRef.current += 1;
+    setWorkspaceCloud(null);
+    setComputingCloud(false);
+  }, []);
+
+  const singularityReqRef = useRef(0);
+  const lastSingularityKeyRef = useRef('');
+  const clearSingularityState = useCallback(() => {
+    singularityReqRef.current += 1;
+    lastSingularityKeyRef.current = '';
+    setSingularityReport(null);
+    setComputingSingularities(false);
+  }, []);
+
+  const singularityInputKey = useMemo(
+    () => `${joints.map(j => `${j.id}:${j.type}:${j.a}:${j.alpha}:${j.d}:${j.theta}:${j.val}:${j.min}:${j.max}`).join('|')}@${mode}@${JSON.stringify(environment)}`,
+    [joints, mode, environment]
+  );
+
+  useEffect(() => {
+    if (!showSingularities || isContinuousMotion) return undefined;
+    if (lastSingularityKeyRef.current === singularityInputKey && singularityReport) return undefined;
+    let cancelled = false;
+    const reqId = ++singularityReqRef.current;
+    const snapshotJoints = joints.map(j => ({ ...j }));
+    const snapshotEnd = [...currentEnd];
+    const snapshotEnv = environment;
+    const snapshotMode = mode;
+    const snapshotKey = singularityInputKey;
+    setComputingSingularities(true);
+    runSingularityAnalysisAsync(snapshotJoints, {
+      referencePos: snapshotEnd,
+      mode: snapshotMode,
+      environment: snapshotEnv,
+    })
+      .then((report) => {
+        if (cancelled || singularityReqRef.current !== reqId) return;
+        lastSingularityKeyRef.current = snapshotKey;
+        setSingularityReport(report);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled && singularityReqRef.current === reqId) {
+          setComputingSingularities(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [showSingularities, isContinuousMotion, singularityInputKey, singularityReport, joints, currentEnd, mode, environment]);
+
+  useEffect(() => () => terminateWorkspaceWorker(), []);
+
   const diagnostics = useMemo(
     () => ((showDifferential || showReport || showSingularities) ? jacobianDiagnostics(joints, fk.jacobian, mode, length) : null),
     [showDifferential, showReport, showSingularities, joints, fk, mode, length]
   );
-  const singularityReport = useMemo(() => {
-    if (!showSingularities) return null;
-    if (isContinuousMotion && lastSingularityReportRef.current) {
-      return lastSingularityReportRef.current;
-    }
-    const next = analyzeRobotSingularities(joints, { referencePos: currentEnd, mode, environment });
-    lastSingularityReportRef.current = next;
-    return next;
-  }, [isContinuousMotion, showSingularities, joints, currentEnd, mode, environment]);
-  const postureInfo = useMemo(() => {
-    if (!showInverse) return null;
-    if (isContinuousMotion && lastPostureInfoRef.current) {
-      const cached = lastPostureInfoRef.current;
-      const arch = cached.architecture || detectAnalyticalArchitecture(joints);
-      return {
-        ...cached,
-        currentPosture: arch ? classifyPosture(joints, arch) : null,
-      };
-    }
-    const next = listPostureBranches(joints, target, {
-      mode,
-      length,
-      toolType,
-      toolOffsetRpy,
-      environment,
-    });
-    lastPostureInfoRef.current = next;
-    return next;
-  }, [showInverse, isContinuousMotion, joints, target, mode, length, toolType, toolOffsetRpy, environment]);
   const velocity = useMemo(
     () => (showDifferential ? multiplyVector(fk.jacobian, joints.map(j => j.speed)) : null),
     [showDifferential, fk, joints]
@@ -248,12 +343,6 @@ function App() {
     () => (showEllipsoid ? computeManipulabilityEllipsoid(fk.jacobian) : null),
     [showEllipsoid, fk.jacobian]
   );
-  const ghostJoints = useMemo(() => {
-    if (!showGhost) return null;
-    const refQ = waypoints[0]?.q;
-    if (!Array.isArray(refQ)) return INITIAL_PRESET.joints.map(j => ({ ...j }));
-    return joints.map((j, i) => ({ ...j, val: refQ[i] !== undefined ? refQ[i] : j.val }));
-  }, [showGhost, waypoints, joints]);
   const selectedJointId = useMemo(
     () => (modelTarget !== 'global' && joints.some(j => String(j.id) === modelTarget) ? Number(modelTarget) : null),
     [modelTarget, joints]
@@ -340,11 +429,11 @@ function App() {
     }
 
     return () => controller.abort();
-  }, []);
+  }, [setIsPlaying, setPlayTime, setSolution, setTarget, setWaypoints]);
 
   function applyEnvironment(nextEnv) {
     setEnvironment(nextEnv);
-    setWorkspaceCloud(null);
+    invalidateWorkspaceCloud();
     setSolution(null);
     const nextCol = detectSelfCollision(joints, fk, toolType, nextEnv);
     if (nextCol.colliding) {
@@ -380,84 +469,6 @@ function App() {
     });
   }
 
-  function solveInverse(targetToSolve = target, modeToUse = mode, jointsToUse = joints, maxIterations = undefined, postureToUse = posture) {
-    setIsPlaying(false);
-    const adjustedTarget = {
-      ...targetToSolve,
-      rpy: flangeRpyFromToolTarget(targetToSolve.rpy, toolOffsetRpy),
-    };
-    const res = inverseKinematics(jointsToUse, adjustedTarget, {
-      mode: modeToUse,
-      length,
-      damping,
-      ...(maxIterations ? { maxIterations } : {}),
-      toolType,
-      environment,
-      posture: postureToUse,
-    });
-    if (res.converged && validateJoints(res.joints).length === 0) {
-      const normalized = normalizeJoints(res.joints).map(j => ({ ...j, speed: 0 }));
-      jointsRef.current = normalized;
-      setJoints(normalized);
-      setSolution({ ...res, joints: normalized, applied: true });
-      setCollisionAlert(null);
-      setMessage('');
-      if (modeToUse !== 'pose' && (res.solver === 'dls' || res.orientationAdjusted)) {
-        const nextFk = forwardKinematics(normalized);
-        const nextTool = computeToolFrame(nextFk.total, toolOffsetRpy, toolType);
-        setTarget(prev => ({
-          ...prev,
-          rpy: nextTool.orientation.rpy.map(v => Math.round(v * 10) / 10),
-        }));
-      }
-    } else {
-      setSolution({ ...res, applied: false });
-      setMessage('');
-    }
-    return res;
-  }
-
-  function selectPosture(nextPosture) {
-    setPosture(nextPosture);
-    solveInverse(target, mode, joints, undefined, nextPosture);
-  }
-
-  function applyPostureBranch(branch) {
-    if (!branch || !Array.isArray(branch.joints)) return;
-    if (validateJoints(branch.joints).length !== 0) return;
-    if (detectSelfCollision(branch.joints, null, toolType, environment).colliding) return;
-    setIsPlaying(false);
-    const normalized = normalizeJoints(branch.joints).map(j => ({ ...j, speed: 0 }));
-    jointsRef.current = normalized;
-    setJoints(normalized);
-    setPosture(branch.posture || 'auto');
-    setCollisionAlert(null);
-    setMessage('');
-    setSolution({ ...branch, joints: normalized, applied: true });
-    if (mode !== 'pose' && branch.orientationAdjusted) {
-      const nextFk = forwardKinematics(normalized);
-      const nextTool = computeToolFrame(nextFk.total, toolOffsetRpy, toolType);
-      setTarget(prev => ({
-        ...prev,
-        rpy: nextTool.orientation.rpy.map(v => Math.round(v * 10) / 10),
-      }));
-    }
-  }
-
-  function syncTargetAndModeForJoints(nextJoints, forceMode = null, customTool = null) {
-    const nextFk = forwardKinematics(nextJoints);
-    const tType = customTool?.toolType || toolType;
-    const tOffset = customTool?.toolOffsetRpy || toolOffsetRpy;
-    const nextTool = computeToolFrame(nextFk.total, tOffset, tType);
-    setTarget({ position: nextFk.positions.at(-1), rpy: nextTool.orientation.rpy });
-    setSolution(null);
-    if (forceMode) {
-      setMode(forceMode);
-    } else if (Math.abs(nextFk.positions.at(-1)[2]) > 1e-4) {
-      setMode('position');
-    }
-  }
-
   function commitJoints(next) {
     const errors = validateJoints(next);
     if (errors.length) { setMessage(errors.join(' ')); return false; }
@@ -469,6 +480,12 @@ function App() {
     setSolution(null); setMessage(''); setCollisionAlert(null);
     return true;
   }
+
+  useEffect(() => {
+    syncTargetRef.current = setTarget;
+    commitJointsRef.current = commitJoints;
+  });
+
   function updateJoint(id, updates, options = {}) {
     const isRangeEdit = updates.min !== undefined || updates.max !== undefined;
     const isValMotion = updates.val !== undefined && !isRangeEdit
@@ -515,7 +532,7 @@ function App() {
     }
 
     if (isRangeEdit) {
-      setWorkspaceCloud(null);
+      invalidateWorkspaceCloud();
       setWaypoints(prev => syncWaypointsToJoints(prev, normalized));
       const nextBounds = computeCartesianBounds(normalized, null, 'position', environment);
       const nextTarget = {
@@ -532,301 +549,6 @@ function App() {
     return true;
   }
   function changeSetting(setter, value) { setter(value); setSolution(null); }
-  function applyOrientationPreset(nextRpy) {
-    const nextTarget = { ...target, rpy: nextRpy };
-    if (mode !== 'pose') setMode('pose');
-    setTarget(nextTarget);
-    solveInverse(nextTarget, 'pose');
-  }
-  function changeTarget(key, index, value) {
-    const nextTarget = { ...target, [key]: target[key].map((v, i) => i === index ? value : v) };
-    const nextMode = key === 'rpy' && mode !== 'pose' ? 'pose' : mode;
-    if (nextMode !== mode) setMode(nextMode);
-    setTarget(nextTarget);
-    if (autoSolveIk) {
-      solveInverse(nextTarget, nextMode);
-    } else {
-      setSolution(null);
-    }
-  }
-  function slideTarget(key, index, value) {
-    setIsPlaying(false);
-    const activeJoints = jointsRef.current || joints;
-    const activeEnd = forwardKinematics(activeJoints).positions.at(-1);
-    const fixedTarget = { ...target, [key]: target[key].map((v, i) => (i === index ? value : v)) };
-    const nextMode = key === 'rpy' && mode !== 'pose' ? 'pose' : mode;
-    if (nextMode !== mode) setMode(nextMode);
-
-    if (key === 'rpy') {
-      const anchorPos = [...activeEnd];
-      const bounded = solveBoundedTarget(
-        activeJoints,
-        { position: anchorPos, rpy: fixedTarget.rpy },
-        { mode: 'pose', length, damping, maxIterations: 45, toolType, toolOffsetRpy, environment, lockPosition: gizmoLockPosition }
-      );
-      if (!bounded.blocked) {
-        jointsRef.current = bounded.joints;
-        setJoints(bounded.joints);
-        setCollisionAlert(null);
-      }
-      setSolution({ ...bounded, applied: bounded.converged && !bounded.blocked });
-      setMessage('');
-      const outPos = (gizmoLockPosition ? anchorPos : bounded.position).map(v => Math.round(v * 1000) / 1000);
-      setTarget({ position: outPos, rpy: bounded.rpy.map(v => Math.round(v * 10) / 10) });
-      return;
-    }
-
-    const isValidSolved = attempt => (
-      attempt
-      && attempt.converged
-      && validateJoints(attempt.joints).length === 0
-      && !detectSelfCollision(attempt.joints, null, toolType, environment).colliding
-    );
-
-    const flangeTarget = {
-      ...fixedTarget,
-      rpy: flangeRpyFromToolTarget(fixedTarget.rpy, toolOffsetRpy),
-    };
-    const fallbackMode = nextMode === 'xy' ? 'xy' : (nextMode === 'pose' && gizmoLockOrientation ? 'pose' : 'position');
-
-    // 1. Continuous same-branch tracking (single warm seed from jointsRef)
-    let solvedMode = nextMode;
-    let res = inverseKinematics(activeJoints, flangeTarget, {
-      mode: nextMode,
-      length,
-      damping,
-      maxIterations: 45,
-      maxSeeds: 1,
-      toolType,
-      environment,
-      posture,
-      strictPosture: false,
-      continuityToleranceDeg: 95,
-    });
-    if (!isValidSolved(res) && nextMode === 'pose' && !gizmoLockOrientation) {
-      const posAttempt = inverseKinematics(activeJoints, flangeTarget, {
-        mode: 'position',
-        length,
-        damping,
-        maxIterations: 45,
-        maxSeeds: 1,
-        toolType,
-        environment,
-      });
-      if (isValidSolved(posAttempt) || posAttempt.error < res.error) {
-        res = posAttempt;
-        solvedMode = 'position';
-      }
-    }
-
-    // 2. Smooth 360-deg joint-wrap escape when a full-circle joint hits +-180 deg seam
-    if (!isValidSolved(res)) {
-      let hasWrapped = false;
-      const wrapSeed = activeJoints.map(jt => {
-        if (jt.type === 'R' && jt.max - jt.min >= 359) {
-          if (jt.val >= jt.max - 5) {
-            hasWrapped = true;
-            return { ...jt, val: jt.val - 355 };
-          }
-          if (jt.val <= jt.min + 5) {
-            hasWrapped = true;
-            return { ...jt, val: jt.val + 355 };
-          }
-        }
-        return jt;
-      });
-      if (hasWrapped) {
-        const wrapAttempt = inverseKinematics(wrapSeed, flangeTarget, {
-          mode: fallbackMode,
-          length,
-          damping,
-          maxIterations: 45,
-          maxSeeds: 1,
-          toolType,
-          environment,
-        });
-        if (isValidSolved(wrapAttempt)) {
-          res = wrapAttempt;
-          solvedMode = fallbackMode;
-        }
-      }
-    }
-
-    // 3. Fast 1D boundary bisection on the current branch (cheap, single warm seed)
-    let applied = isValidSolved(res) ? res : null;
-    let reachedCoord = applied ? value : activeEnd[index];
-    if (!applied) {
-      let lo = activeEnd[index];
-      let hi = value;
-      let bestRes = null;
-      for (let stepIdx = 0; stepIdx < 6; stepIdx++) {
-        const mid = (lo + hi) / 2;
-        const candTarget = {
-          ...flangeTarget,
-          position: flangeTarget.position.map((v, i) => (i === index ? mid : v)),
-        };
-        const attempt = inverseKinematics(bestRes ? bestRes.joints : activeJoints, candTarget, {
-          mode: fallbackMode,
-          length,
-          damping,
-          maxIterations: 25,
-          maxSeeds: 1,
-          toolType,
-          environment,
-        });
-        if (isValidSolved(attempt)) {
-          bestRes = attempt;
-          lo = mid;
-        } else {
-          hi = mid;
-        }
-      }
-      if (bestRes) {
-        applied = bestRes;
-        reachedCoord = lo;
-      }
-    }
-
-    // 4. Controlled branch transition across an interior singular / fold band. Only attempted when the
-    //    current branch is genuinely stuck far from the cursor, and throttled so that dragging inside a
-    //    dead-zone never re-runs the expensive multi-seed search on every pointer tick.
-    const remainingGap = Math.abs(value - reachedCoord);
-    const lastFail = multiSeedFailRef.current;
-    const recentlyFailedHere = lastFail && lastFail.index === index && Math.abs(lastFail.value - value) < 0.15;
-    if (remainingGap > 0.08 && !recentlyFailedHere) {
-      const multiAttempt = inverseKinematics(activeJoints, flangeTarget, {
-        mode: fallbackMode,
-        length,
-        damping,
-        maxIterations: 40,
-        maxSeeds: 4,
-        toolType,
-        environment,
-      });
-      if (isValidSolved(multiAttempt)) {
-        applied = multiAttempt;
-        solvedMode = fallbackMode;
-        multiSeedFailRef.current = null;
-      } else {
-        multiSeedFailRef.current = { index, value };
-      }
-    }
-
-    let outRpy = fixedTarget.rpy;
-    if (applied) {
-      const normalized = normalizeJoints(applied.joints).map(j => ({ ...j, speed: 0 }));
-      jointsRef.current = normalized;
-      setJoints(normalized);
-      setCollisionAlert(null);
-      setSolution({ ...applied, joints: normalized, applied: true });
-      setMessage('');
-      if (solvedMode !== 'pose' && mode !== 'pose') {
-        const nextFk = forwardKinematics(normalized);
-        outRpy = computeToolFrame(nextFk.total, toolOffsetRpy, toolType, toolScale)
-          .orientation.rpy.map(v => Math.round(v * 10) / 10);
-      }
-    } else {
-      setSolution({ ...res, applied: false });
-      setMessage('');
-    }
-
-    // Never snap target.position[index] backwards against the cursor, and keep transverse axes exact
-    setTarget({
-      position: fixedTarget.position,
-      rpy: outRpy,
-    });
-  }
-  function handleGizmoDragStart() {
-    setIsPlaying(false);
-    jointsRef.current = joints;
-    const startFk = forwardKinematics(joints);
-    const startEnd = startFk.positions.at(-1);
-    const startRpy = computeToolFrame(startFk.total, toolOffsetRpy, toolType, toolScale).orientation.rpy;
-    gizmoAnchorPosRef.current = [...startEnd];
-    gizmoAnchorRpyRef.current = [...startRpy];
-    if (tab !== 'inverse' || isPlaying) {
-      setTarget({ position: [...startEnd], rpy: [...startRpy] });
-    }
-    setIsGizmoDragging(true);
-  }
-  function handleGizmoDragEnd() {
-    setIsGizmoDragging(false);
-    gizmoAnchorPosRef.current = null;
-    gizmoAnchorRpyRef.current = null;
-    const activeFk = forwardKinematics(jointsRef.current);
-    const activeEnd = activeFk.positions.at(-1).map(v => Math.round(v * 1000) / 1000);
-    const activeToolRpy = computeToolFrame(activeFk.total, toolOffsetRpy, toolType, toolScale).orientation.rpy.map(v => Math.round(v * 10) / 10);
-    setTarget(prev => ({
-      ...prev,
-      position: activeEnd,
-      rpy: activeToolRpy,
-    }));
-  }
-  function handleGizmoDrag({ position, rpy }) {
-    const activeJoints = jointsRef.current;
-    const activeFk = forwardKinematics(activeJoints);
-    const activeEnd = activeFk.positions.at(-1);
-    const canLockOrientation = activeJoints.filter(j => j.type === 'R').length >= 2;
-
-    if (position) {
-      const requestedPos = position.map((v, i) => (mode === 'xy' && i === 2 ? activeEnd[2] : v));
-      const lockedRpy = gizmoAnchorRpyRef.current || toolFrame.orientation.rpy;
-      const shouldLockOri = gizmoLockOrientation && canLockOrientation;
-      const translateMode = shouldLockOri ? 'pose' : (mode === 'xy' ? 'xy' : 'position');
-      const bounded = solveBoundedTarget(
-        activeJoints,
-        { position: requestedPos, rpy: lockedRpy },
-        { mode: translateMode, length, damping, maxIterations: 45, toolType, toolOffsetRpy, environment, lockOrientation: shouldLockOri }
-      );
-      const nextPos = bounded.position.map((v, i) =>
-        (mode === 'xy' && i === 2 ? activeEnd[2] : Math.round(v * 1000) / 1000)
-      );
-      if (!bounded.blocked) {
-        jointsRef.current = bounded.joints;
-        gizmoAnchorPosRef.current = [...bounded.position];
-        if (!shouldLockOri) {
-          gizmoAnchorRpyRef.current = [...bounded.rpy];
-        }
-        setJoints(bounded.joints);
-        setCollisionAlert(null);
-      }
-      setSolution({ ...bounded, applied: bounded.converged && !bounded.blocked });
-      setMessage('');
-      setTarget(prev => ({
-        ...prev,
-        position: nextPos,
-        rpy: (shouldLockOri ? lockedRpy : bounded.rpy).map(v => Math.round(v * 10) / 10),
-      }));
-      return { position: bounded.position };
-    }
-
-    if (rpy) {
-      if (mode !== 'pose') setMode('pose');
-      const lockedPos = gizmoAnchorPosRef.current || activeEnd;
-      const bounded = solveBoundedTarget(
-        activeJoints,
-        { position: lockedPos, rpy },
-        { mode: 'pose', length, damping, maxIterations: 45, toolType, toolOffsetRpy, environment, lockPosition: gizmoLockPosition }
-      );
-      const resultPos = gizmoLockPosition ? lockedPos : bounded.position;
-      const nextPos = resultPos.map(v => Math.round(v * 1000) / 1000);
-      const nextRpy = bounded.rpy.map(v => Math.round(v * 10) / 10);
-      if (!bounded.blocked) {
-        jointsRef.current = bounded.joints;
-        gizmoAnchorRpyRef.current = [...bounded.rpy];
-        if (!gizmoLockPosition) {
-          gizmoAnchorPosRef.current = [...bounded.position];
-        }
-        setJoints(bounded.joints);
-        setCollisionAlert(null);
-      }
-      setSolution({ ...bounded, applied: bounded.converged && !bounded.blocked });
-      setMessage('');
-      setTarget({ position: nextPos, rpy: nextRpy });
-      return { position: resultPos, rpy: nextRpy };
-    }
-    return undefined;
-  }
   async function persist(action) {
     setBusy(true); setApiError('');
     try { await action(); }
@@ -856,178 +578,15 @@ function App() {
     syncTargetAndModeForJoints(p.joints, presetId === 'rpr' ? 'xy' : 'position', { toolOffsetRpy: presetOffset });
     setPosture('auto');
     setViewKey(k => k + 1);
-    setWorkspaceCloud(null);
+    invalidateWorkspaceCloud();
+    clearSingularityState();
+    Object.values(customLinkStls).forEach(entry => entry?.geometry?.dispose?.());
+    setCustomLinkStls({});
+    setUrdfMeshHints({});
     setIsPlaying(false);
     setPlayTime(0);
     setWaypoints(defaultWaypointsForJoints(p.joints));
     setMessage(`Robô ${p.name} carregado.`);
-  }
-
-  const structuralJointsKey = joints
-    .map(j => `${j.id}:${j.type}:${j.a}:${j.alpha}:${j.d}:${j.theta}:${j.min}:${j.max}`)
-    .join('|');
-  const structuralJoints = useMemo(
-    () => structuralJointsKey.split('|').filter(Boolean).map(entry => {
-      const [id, type, a, alpha, d, theta, min, max] = entry.split(':');
-      return {
-        id: Number(id),
-        type,
-        a: Number(a),
-        alpha: Number(alpha),
-        d: Number(d),
-        theta: Number(theta),
-        val: Number(type === 'P' ? d : theta),
-        min: Number(min),
-        max: Number(max),
-        speed: 0,
-      };
-    }),
-    [structuralJointsKey]
-  );
-
-  const trajectoryData = useMemo(() => {
-    return sampleTrajectoryPath(waypoints, structuralJoints, undefined, interpType, environment);
-  }, [waypoints, structuralJoints, interpType, environment]);
-
-  function seekTrajectory(time) {
-    if (waypoints.length < 2) {
-      setPlayTime(time);
-      return;
-    }
-    const evaluated = evaluateTrajectory(waypoints, time, interpType, joints, environment);
-    if (!evaluated) {
-      setPlayTime(time);
-      return;
-    }
-    const candidate = joints.map((j, i) => {
-      const rawVel = evaluated.velocities[i] !== undefined ? evaluated.velocities[i] : 0;
-      return {
-        ...j,
-        val: evaluated.q[i] !== undefined ? evaluated.q[i] : j.val,
-        speed: j.type === 'R' ? rawVel * DEG : rawVel,
-      };
-    });
-    const swept = sweepJointsCollisionFree(joints, candidate, toolType, environment);
-    if (swept.blocked) {
-      const blockedJoints = swept.joints.map(j => ({ ...j, speed: 0 }));
-      setJoints(blockedJoints);
-      const blockedFk = forwardKinematics(blockedJoints);
-      const blockedTool = computeToolFrame(blockedFk.total, toolOffsetRpy, toolType);
-      setTarget({ position: blockedFk.positions.at(-1), rpy: blockedTool.orientation.rpy });
-      setCollisionAlert(swept.collision);
-      setMessage(`Trajetória interrompida: ${swept.collision.message}`);
-      return;
-    }
-    setPlayTime(time);
-    setJoints(candidate);
-    const candidateFk = forwardKinematics(candidate);
-    const candidateTool = computeToolFrame(candidateFk.total, toolOffsetRpy, toolType);
-    setTarget({ position: candidateFk.positions.at(-1), rpy: candidateTool.orientation.rpy });
-    setCollisionAlert(null);
-    setMessage('');
-  }
-
-  useEffect(() => {
-    if (!isPlaying) return;
-    let lastTime = performance.now();
-    let animId;
-
-    const tick = (now) => {
-      const deltaSec = (now - lastTime) / 1000;
-      lastTime = now;
-
-      const total = trajectoryData.totalDuration;
-      if (total <= 0) {
-        setIsPlaying(false);
-        return;
-      }
-      let next = playTimeRef.current + deltaSec * playbackSpeed;
-      let stoppedAtEnd = false;
-      if (next >= total) {
-        if (isLooping) {
-          next = next % total;
-        } else {
-          next = total;
-          stoppedAtEnd = true;
-        }
-      }
-      const evaluated = evaluateTrajectory(waypoints, next, interpType, jointsRef.current, environmentRef.current);
-      if (evaluated) {
-        const currentJoints = jointsRef.current;
-        const candidate = currentJoints.map((j, i) => {
-          const rawVel = stoppedAtEnd ? 0 : (evaluated.velocities[i] !== undefined ? evaluated.velocities[i] : 0);
-          return {
-            ...j,
-            val: evaluated.q[i] !== undefined ? evaluated.q[i] : j.val,
-            speed: j.type === 'R' ? rawVel * DEG : rawVel,
-          };
-        });
-        const swept = sweepJointsCollisionFree(currentJoints, candidate, toolTypeRef.current, environmentRef.current);
-        if (swept.blocked) {
-          setJoints(swept.joints.map(j => ({ ...j, speed: 0 })));
-          setIsPlaying(false);
-          setCollisionAlert(swept.collision);
-          setMessage(`Trajetória pausada por colisão: ${swept.collision.message}`);
-          return;
-        }
-        jointsRef.current = candidate;
-        setJoints(candidate);
-      }
-      playTimeRef.current = next;
-      setPlayTime(next);
-      if (stoppedAtEnd) {
-        setIsPlaying(false);
-        return;
-      }
-
-      animId = requestAnimationFrame(tick);
-    };
-
-    animId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animId);
-  }, [isPlaying, playbackSpeed, isLooping, trajectoryData.totalDuration, waypoints, interpType]);
-
-  function addWaypointFromPose(qVec, name, durationVal = 2.0) {
-    const count = waypoints.length;
-    const wpDuration = count === 0 ? 0 : Math.max(0.1, Number(durationVal) || 2.0);
-    const newWp = {
-      id: Date.now() + Math.floor(Math.random() * 1000),
-      name: name || `Ponto ${count + 1}`,
-      q: qVec.map((val, i) => {
-        const j = joints[i];
-        return j ? Math.max(j.min, Math.min(j.max, val)) : val;
-      }),
-      duration: wpDuration,
-    };
-    setWaypoints(prev => [...prev, newWp]);
-    setMessage(`Ponto "${newWp.name}" salvo na trajetória.`);
-  }
-
-  function addCurrentWaypoint() {
-    addWaypointFromPose(joints.map(j => j.val), `Ponto ${waypoints.length + 1}`, 2.0);
-  }
-
-  function removeWaypoint(id) {
-    if (waypoints.length <= 1) return;
-    setWaypoints(prev => prev.filter(w => w.id !== id));
-  }
-
-  function moveToWaypoint(wp) {
-    setIsPlaying(false);
-    const candidate = joints.map((j, i) => ({
-      ...j,
-      val: wp.q[i] !== undefined ? wp.q[i] : j.val,
-      speed: 0,
-    }));
-    const swept = sweepJointsCollisionFree(joints, candidate, toolType, environment);
-    if (swept.blocked) {
-      commitJoints(swept.joints);
-      setCollisionAlert(swept.collision);
-      setMessage(`Movimento bloqueado antes da colisão: ${swept.collision.message}`);
-      return;
-    }
-    commitJoints(candidate);
-    setMessage(`Manipulador posicionado em "${wp.name}".`);
   }
 
   function applyJointPose(qVec, note = '') {
@@ -1050,38 +609,62 @@ function App() {
     }
   }
 
-  function updateWaypointDuration(id, duration) {
-    setWaypoints(prev => prev.map(w => w.id === id ? { ...w, duration: Math.max(0.1, duration) } : w));
-  }
-
-  function computeWorkspace() {
+  async function computeWorkspace() {
+    const reqId = ++workspaceReqRef.current;
     setComputingCloud(true);
-    setTimeout(() => {
-      try {
-        const cloud = generateWorkspaceCloud(joints, sampleCount, environment);
-        setWorkspaceCloud(cloud);
-        setShowWorkspace(true);
-        setMessage(`Nuvem de trabalho calculada com ${cloud.count} amostras.`);
-      } catch (err) {
+    try {
+      const cloud = await runWorkspaceCloudAsync(jointsRef.current, sampleCount, environmentRef.current);
+      if (workspaceReqRef.current !== reqId) return;
+      setWorkspaceCloud(cloud);
+      setShowWorkspace(true);
+      setMessage(`Nuvem de trabalho calculada com ${cloud.count} amostras.`);
+    } catch (err) {
+      if (workspaceReqRef.current === reqId) {
         setMessage('Falha ao calcular espaço de trabalho: ' + err.message);
-      } finally {
+      }
+    } finally {
+      if (workspaceReqRef.current === reqId) {
         setComputingCloud(false);
       }
-    }, 20);
+    }
   }
 
   const generatedCode = useMemo(() => {
     if (!showExport) return '';
     const robotName = `Manipulador_${joints.map(j => j.type).join('')}_${joints.length}DOF`;
-    const toolConfig = { toolType, toolOffsetRpy, toolGrip, modelStyle };
+    const linkMeshes = {};
+    joints.forEach(j => {
+      const entry = customLinkStls[String(j.id)];
+      if (entry?.fileName) linkMeshes[String(j.id)] = { fileName: entry.fileName, scale: entry.scale ?? 1 };
+    });
+    const toolConfig = {
+      toolType,
+      toolOffsetRpy,
+      toolGrip,
+      modelStyle,
+      ...(Object.keys(linkMeshes).length > 0 ? { linkMeshes } : {}),
+      ...(stlFileName ? { toolMeshFileName: stlFileName } : {}),
+    };
     if (codeTarget === 'cpp') return generateCpp(joints, robotName, toolConfig);
     if (codeTarget === 'python') return generatePython(joints, robotName, toolConfig);
     if (codeTarget === 'urdf') return exportToURDF(joints, robotName, toolConfig);
     return generateRos2(joints, robotName, toolConfig);
-  }, [showExport, joints, codeTarget, toolType, toolOffsetRpy, toolGrip, modelStyle]);
+  }, [showExport, joints, codeTarget, toolType, toolOffsetRpy, toolGrip, modelStyle, customLinkStls, stlFileName]);
 
   function downloadUrdf() {
-    const urdfContent = exportToURDF(joints, `Manipulador_${joints.map(j => j.type).join('')}`, { toolType, toolOffsetRpy, toolGrip, modelStyle });
+    const linkMeshes = {};
+    joints.forEach(j => {
+      const entry = customLinkStls[String(j.id)];
+      if (entry?.fileName) linkMeshes[String(j.id)] = { fileName: entry.fileName, scale: entry.scale ?? 1 };
+    });
+    const urdfContent = exportToURDF(joints, `Manipulador_${joints.map(j => j.type).join('')}`, {
+      toolType,
+      toolOffsetRpy,
+      toolGrip,
+      modelStyle,
+      ...(Object.keys(linkMeshes).length > 0 ? { linkMeshes } : {}),
+      ...(stlFileName ? { toolMeshFileName: stlFileName } : {}),
+    });
     const blob = new Blob([urdfContent], { type: 'application/xml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1107,12 +690,21 @@ function App() {
             setToolOffsetRpy(importedTool.toolOffsetRpy || [0, 0, 0]);
             if (importedTool.modelStyle) setModelStyle(normalizeModelStyle(importedTool.modelStyle));
           }
+          const importedLinkMeshes = importedTool?.linkMeshes || {};
+          Object.values(customLinkStls).forEach(entry => entry?.geometry?.dispose?.());
+          setCustomLinkStls({});
+          setUrdfMeshHints(importedLinkMeshes);
+          clearSingularityState();
+          invalidateWorkspaceCloud();
           syncTargetAndModeForJoints(normalized, 'position', importedTool);
           setIsPlaying(false);
           setPlayTime(0);
           setWaypoints(defaultWaypointsForJoints(normalized));
           setViewKey(k => k + 1);
-          setMessage(`Robô importado via URDF com sucesso (${parsed.length} juntas).`);
+          const meshCount = Object.keys(importedLinkMeshes).length + (importedTool?.toolMeshFileName ? 1 : 0);
+          setMessage(meshCount > 0
+            ? `Robô importado via URDF com ${parsed.length} juntas e ${meshCount} referência(s) <mesh>. Anexe os .stl em Modelagem 3D.`
+            : `Robô importado via URDF com sucesso (${parsed.length} juntas).`);
         }
       } catch (err) {
         setMessage('Erro ao importar URDF: ' + err.message);
@@ -1173,7 +765,8 @@ function App() {
         setToolScale(nextScale);
         setModelStyle(normalizeModelStyle(importedTool?.modelStyle));
         setEnvironment(nextEnv);
-        setWorkspaceCloud(null);
+        invalidateWorkspaceCloud();
+        clearSingularityState();
         commitJoints(normalized);
         syncTargetAndModeForJoints(normalized, null, { toolType: nextToolType, toolOffsetRpy: nextOffset });
         setIsPlaying(false);
@@ -1218,6 +811,50 @@ function App() {
     setMessage('Malha STL removida. Efetuador padrão restaurado.');
   }
 
+  function handleLinkStlUpload(jointId, e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const geom = parseStlBuffer(ev.target.result, { targetSize: 1.0 });
+        const key = String(jointId);
+        const jIdx = joints.findIndex(j => String(j.id) === key);
+        setCustomLinkStls(prev => {
+          if (prev[key]?.geometry) prev[key].geometry.dispose();
+          return {
+            ...prev,
+            [key]: { geometry: geom, fileName: file.name, scale: prev[key]?.scale ?? 1 },
+          };
+        });
+        setMessage(`Malha STL "${file.name}" aplicada ao elo ${jIdx >= 0 ? jIdx + 1 : key}.`);
+      } catch (err) {
+        setMessage('Erro ao processar arquivo STL do elo: ' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  }
+
+  function updateLinkStlScale(jointId, nextScale) {
+    const key = String(jointId);
+    const safeScale = Number.isFinite(Number(nextScale)) ? Math.max(0.3, Math.min(3.0, Number(nextScale))) : 1;
+    setCustomLinkStls(prev => (prev[key] ? { ...prev, [key]: { ...prev[key], scale: safeScale } } : prev));
+  }
+
+  function removeLinkStl(jointId) {
+    const key = String(jointId);
+    const jIdx = joints.findIndex(j => String(j.id) === key);
+    setCustomLinkStls(prev => {
+      if (!prev[key]) return prev;
+      if (prev[key].geometry) prev[key].geometry.dispose();
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setMessage(`Malha STL removida do elo ${jIdx >= 0 ? jIdx + 1 : key}.`);
+  }
+
   function copyCode() {
     navigator.clipboard.writeText(generatedCode).then(() => {
       setCopied(true);
@@ -1257,22 +894,6 @@ function App() {
     });
   }
 
-  const targetDistance = mode === 'xy'
-    ? Math.hypot(target.position[0] - currentEnd[0], target.position[1] - currentEnd[1])
-    : Math.hypot(target.position[0] - currentEnd[0], target.position[1] - currentEnd[1], target.position[2] - currentEnd[2]);
-
-  const toolAngularErrorDeg = useMemo(() => {
-    if (!showInverse) return 0;
-    const rCurr = toolFrame.orientation.rotation;
-    const d = rotationFromRPY(target.rpy).elements;
-    const trace =
-      rCurr[0][0] * d[0] + rCurr[1][0] * d[1] + rCurr[2][0] * d[2]
-      + rCurr[0][1] * d[4] + rCurr[1][1] * d[5] + rCurr[2][1] * d[6]
-      + rCurr[0][2] * d[8] + rCurr[1][2] * d[9] + rCurr[2][2] * d[10];
-    const cosTheta = Math.max(-1, Math.min(1, (trace - 1) / 2));
-    return Math.acos(cosTheta) / DEG;
-  }, [showInverse, toolFrame, target.rpy]);
-
   const numeric = useCallback(
     (fieldLabel, value, onCommit, extra = {}) => (
       <NumberField label={fieldLabel} value={value} onCommit={onCommit} onError={setMessage} {...extra} />
@@ -1285,19 +906,13 @@ function App() {
     setDefaultToolOffset([...INITIAL_TOOL_OFFSET]);
     setToolOffsetRpy([...INITIAL_TOOL_OFFSET]);
     syncTargetAndModeForJoints(INITIAL_PRESET.joints, 'position', { toolOffsetRpy: INITIAL_TOOL_OFFSET });
+    clearSingularityState();
+    invalidateWorkspaceCloud();
     setIsPlaying(false);
     setPlayTime(0);
     setWaypoints(defaultWaypointsForJoints(INITIAL_PRESET.joints));
     setViewKey(k => k + 1);
   }
-
-  const handleGizmoModeChange = useCallback((nextGizmoMode) => {
-    setGizmoMode(nextGizmoMode);
-    if (nextGizmoMode === 'rotate' && mode !== 'pose') {
-      setMode('pose');
-      setSolution(null);
-    }
-  }, [mode]);
 
   const handleSelectViewPreset = useCallback((preset) => {
     setViewPreset(preset);
@@ -1323,7 +938,8 @@ function App() {
     setModelStyle(normalizeModelStyle(snap.modelStyle));
     setEnvironment(normalizeEnvironment(snap.environment));
     setWaypoints(syncWaypointsToJoints(snap.waypoints, normalized));
-    setWorkspaceCloud(null);
+    invalidateWorkspaceCloud();
+    clearSingularityState();
     setCollisionAlert(null);
     syncTargetAndModeForJoints(normalized, null, { toolType: snap.toolType, toolOffsetRpy: snap.toolOffsetRpy });
   }
@@ -1341,26 +957,6 @@ function App() {
     onApplySnapshot: applyHistorySnapshot,
     onMessage: setMessage,
   });
-
-  function toggleTrajectoryPlayback() {
-    if (waypoints.length < 2 || trajectoryData.totalDuration <= 0) return;
-    if (!isPlaying && playTimeRef.current >= trajectoryData.totalDuration - 1e-4) {
-      playTimeRef.current = 0;
-      setPlayTime(0);
-    }
-    setIsPlaying(prev => !prev);
-  }
-
-  const waypointsRef = useRef(waypoints);
-  const moveToWaypointRef = useRef(moveToWaypoint);
-  useEffect(() => {
-    waypointsRef.current = waypoints;
-    moveToWaypointRef.current = moveToWaypoint;
-  });
-  const handleSelectWaypoint = useCallback((idx) => {
-    const wp = waypointsRef.current[idx];
-    if (wp) moveToWaypointRef.current(wp);
-  }, []);
 
   useEffect(() => {
     shortcutsRef.current = {
@@ -1543,6 +1139,11 @@ function App() {
       setShowWorkspace={setShowWorkspace}
       showEllipsoid={showEllipsoid}
       setShowEllipsoid={setShowEllipsoid}
+      showSingularityHighlights={showSingularityHighlights}
+      setShowSingularityHighlights={setShowSingularityHighlights}
+      activeSingularityHighlight={hoveredSingularity}
+      onHoverSingularity={setHoveredSingularity}
+      computingSingularities={computingSingularities}
       numeric={numeric}
     />
   ) : panelId === 'trajectory' ? (
@@ -1619,6 +1220,7 @@ function App() {
         showTrajectory={showTrajectory}
         onSelectWaypoint={handleSelectWaypoint}
         customStlGeometry={customStlGeometry}
+        customLinkStls={customLinkStls}
         toolType={toolType}
         toolOffsetRpy={toolOffsetRpy}
         toolGrip={toolGrip}
@@ -1628,14 +1230,12 @@ function App() {
         onSelectJoint={handleSelectJoint}
         ellipsoid={ellipsoid}
         showEllipsoid={showEllipsoid}
+        singularityReport={showSingularities && showSingularityHighlights ? singularityReport : null}
+        activeSingularityHighlight={showSingularities && showSingularityHighlights ? hoveredSingularity : null}
         ghostJoints={ghostJoints}
         showGhost={showGhost}
-        ikTarget={(showGizmo || tab === 'inverse')
-          ? ((isPlaying || tab !== 'inverse')
-            ? currentEnd
-            : [target.position[0], target.position[1], mode === 'xy' ? currentEnd[2] : target.position[2]])
-          : null}
-        ikRpy={(isPlaying || tab !== 'inverse') ? toolFrame.orientation.rpy : target.rpy}
+        ikTarget={ikTargetForScene}
+        ikRpy={ikRpyForScene}
         gizmoEnabled={showGizmo}
         gizmoMode={gizmoMode}
         taskMode={mode}
@@ -1689,6 +1289,11 @@ function App() {
         stlFileName={stlFileName}
         handleStlUpload={handleStlUpload}
         removeStlMesh={removeStlMesh}
+        customLinkStls={customLinkStls}
+        onUploadLinkStl={handleLinkStlUpload}
+        onScaleLinkStl={updateLinkStlScale}
+        onRemoveLinkStl={removeLinkStl}
+        urdfMeshHints={urdfMeshHints}
         onFrameView={handleFrameView}
         viewPreset={viewPreset}
         onSelectViewPreset={handleSelectViewPreset}

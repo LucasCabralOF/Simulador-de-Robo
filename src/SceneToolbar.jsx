@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import {
   Activity,
   AlertTriangle,
+  ChevronDown,
   Code2,
   Compass,
   Cpu,
@@ -39,6 +40,8 @@ const ANALYSIS_TABS = [
   { id: 'export', label: 'Código', title: 'Exportação de Código e URDF', size: 'wide', icon: Code2 },
   { id: 'report', label: 'Relatório', title: 'Relatório Acadêmico', size: 'wide', icon: FileText },
 ];
+
+const SECONDARY_TAB_IDS = new Set(['workspace', 'export', 'report']);
 
 const POPOVER_META = {
   ...Object.fromEntries(ANALYSIS_TABS.map(item => [item.id, item])),
@@ -107,6 +110,11 @@ const SceneToolbar = memo(function SceneToolbar({
   stlFileName,
   handleStlUpload,
   removeStlMesh,
+  customLinkStls = {},
+  onUploadLinkStl,
+  onScaleLinkStl,
+  onRemoveLinkStl,
+  urdfMeshHints = {},
   onFrameView,
   viewPreset,
   onSelectViewPreset,
@@ -136,9 +144,38 @@ const SceneToolbar = memo(function SceneToolbar({
 }) {
   const [windowStates, setWindowStates] = useState({});
   const [dragState, setDragState] = useState(null); // { panelId, type: 'move' | 'resize' } | null
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1440));
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const workspaceRowRef = useRef(null);
   const popoverRefs = useRef({});
   const prevOpenPanelsRef = useRef([]);
+  const moreMenuRef = useRef(null);
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    if (!moreMenuOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMoreMenuOpen(false);
+      }
+    };
+    const onPointerDown = (e) => {
+      if (moreMenuRef.current?.contains(e.target)) return;
+      setMoreMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [moreMenuOpen]);
 
   useLayoutEffect(() => {
     const prevOpen = prevOpenPanelsRef.current;
@@ -311,7 +348,15 @@ const SceneToolbar = memo(function SceneToolbar({
   const targetIdx = joints.findIndex(j => String(j.id) === activeTarget);
   const targetJoint = targetIdx >= 0 ? joints[targetIdx] : null;
   const overrideCount = modelStyle.perJoint ? Object.keys(modelStyle.perJoint).length : 0;
-  const modelingBadge = targetJoint ? `J${targetIdx + 1}` : (overrideCount > 0 ? `${overrideCount}×` : null);
+  const linkStlCount = Object.keys(customLinkStls).length;
+  const modelingBadge = targetJoint
+    ? `J${targetIdx + 1}${customLinkStls[String(targetJoint.id)] ? '·STL' : ''}`
+    : (linkStlCount > 0 ? `${linkStlCount} STL` : (overrideCount > 0 ? `${overrideCount}×` : null));
+  const compactTabsMode = viewportWidth > 800 && viewportWidth < 1180;
+  const visibleTabs = compactTabsMode ? ANALYSIS_TABS.filter(item => !SECONDARY_TAB_IDS.has(item.id)) : ANALYSIS_TABS;
+  const overflowTabs = compactTabsMode ? ANALYSIS_TABS.filter(item => SECONDARY_TAB_IDS.has(item.id)) : [];
+  const hasOverflowContext = overflowTabs.some(item => item.id === tab);
+  const hasOverflowOpen = overflowTabs.some(item => openPanels.includes(item.id));
   const isDefaultTool = toolType === 'gripper'
     && toolOffsetRpy.every((v, idx) => Math.abs(v - defaultToolOffset[idx]) < 1e-6)
     && toolGrip === 50
@@ -371,7 +416,7 @@ const SceneToolbar = memo(function SceneToolbar({
           <span className="scene-toolbar-sep" role="separator" aria-orientation="vertical" />
 
           <nav className="scene-toolbar-nav" aria-label="Análises">
-            {ANALYSIS_TABS.map(item => {
+            {visibleTabs.map(item => {
               const Icon = item.icon;
               const isOpen = openPanels.includes(item.id);
               return (
@@ -383,13 +428,54 @@ const SceneToolbar = memo(function SceneToolbar({
                   aria-expanded={isOpen}
                   aria-controls={`scene-popover-${item.id}`}
                   title={`${item.title} · Ctrl+Clique para abrir em paralelo`}
-                  onClick={e => onSelectTab(item.id, Boolean(e.ctrlKey || e.metaKey || e.shiftKey))}
+                  onClick={e => {
+                    setMoreMenuOpen(false);
+                    onSelectTab(item.id, Boolean(e.ctrlKey || e.metaKey || e.shiftKey));
+                  }}
                 >
                   <Icon size={13} aria-hidden="true" />
                   <span>{item.label}</span>
                 </button>
               );
             })}
+            {overflowTabs.length > 0 && (
+              <div className="scene-toolbar-more-wrap" ref={moreMenuRef}>
+                <button
+                  type="button"
+                  className={`scene-toolbar-tab scene-toolbar-more-btn${hasOverflowContext ? ' is-context' : ''}${hasOverflowOpen ? ' is-open' : ''}`}
+                  aria-haspopup="menu"
+                  aria-expanded={moreMenuOpen}
+                  title="Mais abas de análise"
+                  onClick={() => setMoreMenuOpen(prev => !prev)}
+                >
+                  <span>Mais</span>
+                  <ChevronDown size={12} aria-hidden="true" />
+                </button>
+                {moreMenuOpen && (
+                  <div className="scene-toolbar-more-menu" role="menu" aria-label="Mais análises">
+                    {overflowTabs.map(item => {
+                      const Icon = item.icon;
+                      const isOpen = openPanels.includes(item.id);
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          role="menuitem"
+                          className={`scene-toolbar-more-item${tab === item.id ? ' is-context' : ''}${isOpen ? ' is-open' : ''}`}
+                          onClick={e => {
+                            setMoreMenuOpen(false);
+                            onSelectTab(item.id, Boolean(e.ctrlKey || e.metaKey || e.shiftKey));
+                          }}
+                        >
+                          <Icon size={14} aria-hidden="true" />
+                          <span>{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </nav>
 
           <span className="scene-toolbar-sep" role="separator" aria-orientation="vertical" />
@@ -398,18 +484,20 @@ const SceneToolbar = memo(function SceneToolbar({
             <Button
               type="button"
               className={`scene-toolbar-trigger${openPanels.includes('modeling') ? ' is-active' : ''}`}
+              aria-label="Modelagem 3D"
               aria-expanded={openPanels.includes('modeling')}
               aria-controls="scene-popover-modeling"
               title="Modelagem 3D · Ctrl+Clique para abrir em paralelo"
               onClick={e => onTogglePanel('modeling', Boolean(e.ctrlKey || e.metaKey || e.shiftKey))}
             >
               <SlidersHorizontal size={14} aria-hidden="true" />
-              <span>Modelagem 3D</span>
+              <span>{compactTabsMode ? 'Modelagem' : 'Modelagem 3D'}</span>
               {modelingBadge && <span className="scene-toolbar-badge">{modelingBadge}</span>}
             </Button>
             <Button
               type="button"
               className={`scene-toolbar-trigger${openPanels.includes('tool') ? ' is-active' : ''}`}
+              aria-label="Ferramenta"
               aria-expanded={openPanels.includes('tool')}
               aria-controls="scene-popover-tool"
               title="Ferramenta (TCP) · Ctrl+Clique para abrir em paralelo"
@@ -548,6 +636,11 @@ const SceneToolbar = memo(function SceneToolbar({
                         setModelStyle={setModelStyle}
                         modelTarget={modelTarget}
                         setModelTarget={setModelTarget}
+                        customLinkStls={customLinkStls}
+                        onUploadLinkStl={onUploadLinkStl}
+                        onScaleLinkStl={onScaleLinkStl}
+                        onRemoveLinkStl={onRemoveLinkStl}
+                        urdfMeshHints={urdfMeshHints}
                         numeric={numeric}
                       />
                     )}

@@ -1148,4 +1148,128 @@ test('analytical IK posture selector switches UR5 and SCARA branches cleanly whi
   expect(errors).toEqual([]);
 });
 
+test('3D singularity highlights, per-link custom STL with URDF <mesh>, and medium-screen compact toolbar work end-to-end', async ({ page }, info) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  await page.goto('/');
+  await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+
+  // 1. 3D Highlight direct from Singularidades tab
+  await page.getByRole('button', { name: 'Singularidades', exact: true }).click();
+  const singPopover = page.locator('.scene-popover[data-panel-id="singularities"]');
+  await expect(singPopover).toBeVisible();
+  const highlightCheck = singPopover.getByRole('checkbox', { name: 'Destaques 3D na cena' });
+  await expect(highlightCheck).toBeChecked();
+
+  const beforeHighlightPx = await pixels(page);
+  const firstPoseCard = singPopover.locator('.singularity-pose-item').first();
+  await firstPoseCard.hover();
+  await expect(firstPoseCard).toHaveClass(/is-highlighted/);
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(beforeHighlightPx.checksum);
+
+  await highlightCheck.uncheck();
+  await expect(highlightCheck).not.toBeChecked();
+  await highlightCheck.check();
+
+  // 2. Per-link custom STL mesh in Modelagem 3D + <mesh> export in URDF
+  await page.getByRole('button', { name: 'Modelagem 3D', exact: true }).click();
+  const modelPopover = page.locator('.scene-popover[data-panel-id="modeling"]');
+  await expect(modelPopover).toBeVisible();
+  await pickOption(page, 'Alvo da personalização 3D', 'Eixo / Ligação 1 (R)');
+
+  const stlContent = `solid custom_link
+  facet normal 0 0 1
+    outer loop
+      vertex -0.5 -0.2 -0.2
+      vertex 0.5 0.0 -0.2
+      vertex 0.0 0.3 0.2
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex -0.5 -0.2 0.2
+      vertex 0.5 0.0 0.2
+      vertex 0.0 -0.3 -0.2
+    endloop
+  endfacet
+endsolid custom_link
+`;
+  await page.getByLabel('Upload STL do elo 1').setInputFiles({
+    name: 'elo_1_cad.stl',
+    mimeType: 'application/sla',
+    buffer: Buffer.from(stlContent, 'utf8'),
+  });
+  await expect(modelPopover).toContainText('Ativa: elo_1_cad.stl');
+  await expect(page.getByRole('button', { name: 'Modelagem 3D', exact: true })).toContainText('J1·STL');
+  await number(page, 'Escala STL elo 1', 1.5);
+
+  if (info.project.name === 'desktop') {
+    // 3. Medium desktop compaction (1280px single row + 1080px overflow Mais menu)
+    await page.setViewportSize({ width: 1280, height: 780 });
+    const tb1280 = await page.locator('.scene-toolbar').boundingBox();
+    expect(tb1280.height).toBeLessThanOrEqual(48);
+
+    await page.setViewportSize({ width: 1080, height: 780 });
+    const moreBtn = page.getByRole('button', { name: 'Mais', exact: true });
+    await expect(moreBtn).toBeVisible();
+    const tb1080 = await page.locator('.scene-toolbar').boundingBox();
+    expect(tb1080.height).toBeLessThanOrEqual(48);
+
+    await moreBtn.click();
+    const moreMenu = page.locator('.scene-toolbar-more-menu');
+    await expect(moreMenu).toBeVisible();
+    await moreMenu.getByRole('menuitem', { name: 'Código', exact: true }).click();
+  } else {
+    await page.getByRole('button', { name: 'Código', exact: true }).click();
+  }
+
+  const exportPopover = page.locator('.scene-popover[data-panel-id="export"]');
+  await expect(exportPopover).toBeVisible();
+  await exportPopover.getByRole('button', { name: 'URDF (ROS)', exact: true }).click();
+  await expect(exportPopover.locator('pre')).toContainText('meshes/elo_1_cad.stl');
+  await expect(exportPopover.locator('pre')).toContainText('scale="1.5 1.5 1.5"');
+
+  await page.getByRole('button', { name: 'Modelagem 3D', exact: true }).click();
+  await page.getByRole('button', { name: 'Remover STL do elo 1', exact: true }).click();
+  await expect(page.locator('.notice[role="status"]')).toContainText('Malha STL removida do elo 1');
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Web Worker computes 5000-point workspace cloud and asynchronous Singularidades maps cleanly across presets', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  await page.goto('/');
+  await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+
+  // 1. Async 5,000-point Monte Carlo workspace generation off main thread
+  await page.getByRole('button', { name: 'Alcance 3D', exact: true }).click();
+  const wsPopover = page.locator('.scene-popover[data-panel-id="workspace"]');
+  await expect(wsPopover).toBeVisible();
+  await pickOption(page, 'Número de amostras', '5.000 pontos (Alta densidade)');
+  await wsPopover.getByRole('button', { name: 'Calcular alcance', exact: true }).click();
+  await expect(wsPopover).toContainText('Estatísticas do Envelope', { timeout: 15000 });
+  await expect(wsPopover).toContainText('Pontos amostrados');
+
+  // 2. Async Singularidades map updates via worker across UR5 -> SCARA switch
+  await page.getByRole('button', { name: 'Singularidades', exact: true }).click();
+  const singPopover = page.locator('.scene-popover[data-panel-id="singularities"]');
+  await expect(singPopover).toContainText('Mapa por eixo cartesiano (X, Y, Z)', { timeout: 15000 });
+  expect(await singPopover.locator('.singularity-axis-svg').count()).toBeGreaterThanOrEqual(3);
+
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  await pickOption(page, 'Selecionar preset industrial', 'SCARA (RRPR) (4 DOF)');
+  await page.getByRole('button', { name: 'Singularidades', exact: true }).click();
+  await expect(singPopover).toContainText('Mapa por eixo cartesiano (X, Y, Z)', { timeout: 15000 });
+  await expect(singPopover).toContainText('Eixo Z');
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 

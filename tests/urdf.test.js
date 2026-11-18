@@ -85,3 +85,44 @@ test('URDF round-trip preserves custom modelStyle link shape and joint sizes (in
   const parsed = parseURDF(urdf);
   assert.deepEqual(parsed.toolConfig.modelStyle, modelStyle);
 });
+
+test('URDF exports and parses per-link STL <mesh> geometries and external ROS link names', () => {
+  const joints = PRESETS.rpr.joints;
+  const urdf = exportToURDF(joints, 'CAD_Bot', {
+    toolType: 'gripper',
+    toolOffsetRpy: [0, 0, 0],
+    linkMeshes: {
+      1: { fileName: 'arm_base.stl', scale: 1.25 },
+      2: { fileName: 'slider_rail.stl', scale: 0.75 },
+    },
+    toolMeshFileName: 'custom_gripper.stl',
+  });
+  assert.match(urdf, /<mesh filename="package:\/\/cad_bot\/meshes\/arm_base\.stl" scale="1\.25 1\.25 1\.25"\/>/);
+  assert.match(urdf, /<mesh filename="package:\/\/cad_bot\/meshes\/slider_rail\.stl" scale="0\.75 0\.75 0\.75"\/>/);
+  assert.match(urdf, /<mesh filename="package:\/\/cad_bot\/meshes\/custom_gripper\.stl" scale="1 1 1"\/>/);
+
+  const parsed = parseURDF(urdf);
+  assert.equal(parsed.toolConfig.linkMeshes['1'].fileName, 'arm_base.stl');
+  assert.equal(parsed.toolConfig.linkMeshes['1'].scale, 1.25);
+  assert.equal(parsed.toolConfig.linkMeshes['2'].fileName, 'slider_rail.stl');
+  assert.equal(parsed.toolConfig.toolMeshFileName, 'custom_gripper.stl');
+
+  // External URDF using non-indexed link names
+  const externalUrdf = `<?xml version="1.0"?>
+  <robot name="ext_ur">
+    <link name="base_link"/>
+    <joint name="shoulder_pan" type="revolute">
+      <parent link="base_link"/>
+      <child link="shoulder_link"/>
+      <origin xyz="0 0 1.2" rpy="1.5708 0 0"/>
+      <limit lower="-3.14" upper="3.14" velocity="3.14"/>
+    </joint>
+    <link name="shoulder_link">
+      <visual><geometry><mesh filename="package://ur_description/meshes/ur5/visual/shoulder.dae" scale="1.5 1.5 1.5"/></geometry></visual>
+    </link>
+  </robot>`;
+  const extParsed = parseURDF(externalUrdf);
+  assert.equal(extParsed.length, 1);
+  assert.equal(extParsed.toolConfig.linkMeshes['1'].fileName, 'shoulder.dae');
+  assert.equal(extParsed.toolConfig.linkMeshes['1'].scale, 1.5);
+});

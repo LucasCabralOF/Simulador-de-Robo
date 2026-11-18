@@ -66,6 +66,15 @@ const WAYPOINT_SPHERE_MAT = new MeshStandardMaterial({ color: '#ff9f43', emissiv
 const WAYPOINT_HALO_MAT = new MeshStandardMaterial({ color: '#ffb86c', emissive: '#ff9f43', emissiveIntensity: 0.6, transparent: true, opacity: 0.85 });
 const APPROACH_SHAFT_MAT = new MeshStandardMaterial({ color: '#62d5b5', emissive: '#279d84', emissiveIntensity: 0.6, transparent: true, opacity: 0.8 });
 const APPROACH_TIP_MAT = new MeshStandardMaterial({ color: '#62d5b5', emissive: '#279d84', emissiveIntensity: 0.75 });
+const SING_POSE_SPHERE_GEOM = new SphereGeometry(0.14, 16, 16);
+const SING_CAP_GEOM = new SphereGeometry(0.08, 12, 12);
+const SING_HALO_GEOM = new TorusGeometry(0.28, 0.022, 10, 28);
+const SING_BAND_CYL_GEOM = new CylinderGeometry(0.045, 0.045, 1, 14);
+const SING_POSE_MAT = new MeshStandardMaterial({ color: '#ff5a6e', emissive: '#a81d32', emissiveIntensity: 0.65, transparent: true, opacity: 0.6, depthWrite: false });
+const SING_ACTIVE_MAT = new MeshStandardMaterial({ color: '#ffd166', emissive: '#ff3b5c', emissiveIntensity: 0.9, transparent: true, opacity: 0.94, depthWrite: false });
+const SING_HALO_MAT = new MeshStandardMaterial({ color: '#ffd166', emissive: '#ff5a6e', emissiveIntensity: 0.85, transparent: true, opacity: 0.92, depthWrite: false });
+const SING_BAND_MAT = new MeshStandardMaterial({ color: '#ff4d6d', emissive: '#991b35', emissiveIntensity: 0.55, transparent: true, opacity: 0.36, depthWrite: false });
+const SING_BAND_ACTIVE_MAT = new MeshStandardMaterial({ color: '#ff8599', emissive: '#ff2d55', emissiveIntensity: 0.9, transparent: true, opacity: 0.82, depthWrite: false });
 const CUSTOM_MAT_CACHE = new Map();
 function getStyledMaterial(color, defaultColor, defaultMat, selectedMat, isSelected, isLink = false) {
   if (!color || color === defaultColor) {
@@ -242,7 +251,7 @@ function EndEffectorTool({ toolType = 'gripper', toolOffsetRpy = DEFAULT_TOOL_OF
   </group>;
 }
 
-function DHLink({ joint, index, isLast, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, toolScale = 1, modelStyle, selectedJointId = null, onSelectJoint, ghost = false, children }) {
+function DHLink({ joint, index, isLast, showFrames, customStlGeometry, customLinkStls = null, toolType, toolOffsetRpy, toolGrip, toolScale = 1, modelStyle, selectedJointId = null, onSelectJoint, ghost = false, children }) {
   const { id, type, a, alpha, d: jointD, theta: jointTheta, val } = joint;
   const d = type === 'P' ? val : jointD;
   const theta = (type === 'R' ? val : jointTheta) * DEG;
@@ -260,13 +269,30 @@ function DHLink({ joint, index, isLast, showFrames, customStlGeometry, toolType,
   const linkMat = ghost
     ? GHOST_MAT
     : getStyledMaterial(style.linkColor, DEFAULT_JOINT_COLORS.linkColor, LINK_SHAFT_MAT, LINK_SHAFT_SELECTED_MAT, isSelected, true);
+  const linkStl = !ghost ? (customLinkStls?.[String(id)] || null) : null;
+  const linkStlGeom = linkStl?.geometry || null;
+  const linkStlScaleFactor = Number.isFinite(Number(linkStl?.scale)) ? Math.max(0.3, Math.min(3.0, Number(linkStl.scale))) : 1;
+  const primarySpan = Math.abs(a) > 1e-5 ? Math.abs(a) : Math.abs(d) > 1e-5 ? Math.abs(d) : 0.55;
+  const linkStlUniformScale = primarySpan * linkStlScaleFactor;
   return <group>
     {type === 'R'
       ? <mesh geometry={REV_MOTOR_GEOM} material={motorMat} rotation={[Math.PI / 2, 0, 0]} scale={[style.revRadius, style.revLength, style.revRadius]} onClick={handleMeshClick} dispose={null} />
       : <mesh geometry={PRISM_BOX_GEOM} material={prismMat} position={[0, 0, d / 2]} scale={[style.prismWidth, style.prismWidth, style.prismLength]} onClick={handleMeshClick} dispose={null} />}
     <group rotation={[0, 0, theta]}>
-      {d !== 0 && <mesh geometry={linkGeom} material={linkMat} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, d / 2]} scale={[style.linkRadius, Math.abs(d), style.linkRadius]} onClick={handleMeshClick} dispose={null} />}
-      {a !== 0 && <mesh geometry={linkGeom} material={linkMat} rotation={[0, 0, Math.PI / 2]} position={[a / 2, 0, d]} scale={[style.linkRadius, Math.abs(a), style.linkRadius]} onClick={handleMeshClick} dispose={null} />}
+      {linkStlGeom ? <>
+        {d !== 0 && a !== 0 && <mesh geometry={linkGeom} material={linkMat} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, d / 2]} scale={[style.linkRadius, Math.abs(d), style.linkRadius]} onClick={handleMeshClick} dispose={null} />}
+        <mesh
+          geometry={linkStlGeom}
+          material={linkMat}
+          position={a !== 0 ? [a / 2, 0, d] : d !== 0 ? [0, 0, d / 2] : [0, 0, 0]}
+          rotation={a === 0 && d !== 0 ? [Math.PI / 2, 0, 0] : [0, 0, 0]}
+          scale={[linkStlUniformScale, linkStlUniformScale, linkStlUniformScale]}
+          onClick={handleMeshClick}
+        />
+      </> : <>
+        {d !== 0 && <mesh geometry={linkGeom} material={linkMat} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, d / 2]} scale={[style.linkRadius, Math.abs(d), style.linkRadius]} onClick={handleMeshClick} dispose={null} />}
+        {a !== 0 && <mesh geometry={linkGeom} material={linkMat} rotation={[0, 0, Math.PI / 2]} position={[a / 2, 0, d]} scale={[style.linkRadius, Math.abs(a), style.linkRadius]} onClick={handleMeshClick} dispose={null} />}
+      </>}
     </group>
     <group matrix={transform} matrixAutoUpdate={false}>
       {!ghost && showFrames && <Frame index={index + 1} />}
@@ -276,10 +302,10 @@ function DHLink({ joint, index, isLast, showFrames, customStlGeometry, toolType,
   </group>;
 }
 
-function RobotBuilder({ joints, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, toolScale = 1, modelStyle, selectedJointId = null, onSelectJoint, ghost = false, index = 0 }) {
+function RobotBuilder({ joints, showFrames, customStlGeometry, customLinkStls = null, toolType, toolOffsetRpy, toolGrip, toolScale = 1, modelStyle, selectedJointId = null, onSelectJoint, ghost = false, index = 0 }) {
   if (index >= joints.length) return null;
-  return <DHLink joint={joints[index]} index={index} isLast={index === joints.length - 1} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} toolScale={toolScale} modelStyle={modelStyle} selectedJointId={selectedJointId} onSelectJoint={onSelectJoint} ghost={ghost}>
-    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} toolScale={toolScale} modelStyle={modelStyle} selectedJointId={selectedJointId} onSelectJoint={onSelectJoint} ghost={ghost} index={index + 1} />
+  return <DHLink joint={joints[index]} index={index} isLast={index === joints.length - 1} showFrames={showFrames} customStlGeometry={customStlGeometry} customLinkStls={customLinkStls} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} toolScale={toolScale} modelStyle={modelStyle} selectedJointId={selectedJointId} onSelectJoint={onSelectJoint} ghost={ghost}>
+    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} customLinkStls={customLinkStls} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} toolScale={toolScale} modelStyle={modelStyle} selectedJointId={selectedJointId} onSelectJoint={onSelectJoint} ghost={ghost} index={index + 1} />
   </DHLink>;
 }
 
@@ -447,6 +473,80 @@ function TargetGizmo({ position, rpy, enabled = true, gizmoMode = 'translate', t
   </>;
 }
 
+function SingularityHighlights({ report, activeHighlight }) {
+  if (!report) return null;
+  const refPos = Array.isArray(report.referencePos) && report.referencePos.length === 3 ? report.referencePos : [0, 0, 0];
+  const axes = Array.isArray(report.axes) ? report.axes : [];
+  const poses = Array.isArray(report.criticalPoses) ? report.criticalPoses : [];
+
+  const bandRotations = [
+    [0, 0, Math.PI / 2],
+    [0, 0, 0],
+    [Math.PI / 2, 0, 0],
+  ];
+
+  return (
+    <group>
+      {axes.map(axisData => {
+        const aIdx = Number.isInteger(axisData.axis) ? axisData.axis : 0;
+        const rot = bandRotations[aIdx] || bandRotations[0];
+        return (axisData.intervals || []).map((iv, idx) => {
+          const isHovered = activeHighlight?.kind === 'interval'
+            && activeHighlight.axis === aIdx
+            && Math.abs(activeHighlight.start - iv.start) < 1e-4
+            && Math.abs(activeHighlight.end - iv.end) < 1e-4;
+          const center = [...refPos];
+          center[aIdx] = (iv.start + iv.end) / 2;
+          const len = Math.max(0.08, Math.abs(iv.end - iv.start));
+          const radScale = isHovered ? 1.75 : 0.9;
+          const capStart = [...refPos];
+          capStart[aIdx] = iv.start;
+          const capEnd = [...refPos];
+          capEnd[aIdx] = iv.end;
+          return (
+            <group key={`sing-band-${aIdx}-${idx}`}>
+              <mesh
+                geometry={SING_BAND_CYL_GEOM}
+                material={isHovered ? SING_BAND_ACTIVE_MAT : SING_BAND_MAT}
+                position={center}
+                rotation={rot}
+                scale={[radScale, len, radScale]}
+                dispose={null}
+              />
+              {isHovered && <>
+                <mesh geometry={SING_CAP_GEOM} material={SING_ACTIVE_MAT} position={capStart} dispose={null} />
+                <mesh geometry={SING_CAP_GEOM} material={SING_ACTIVE_MAT} position={capEnd} dispose={null} />
+              </>}
+            </group>
+          );
+        });
+      })}
+
+      {poses.map(pose => {
+        const isHovered = activeHighlight?.id === pose.id;
+        return (
+          <mesh
+            key={pose.id}
+            geometry={SING_POSE_SPHERE_GEOM}
+            material={isHovered ? SING_ACTIVE_MAT : SING_POSE_MAT}
+            position={pose.pos}
+            scale={isHovered ? 1.45 : 0.85}
+            dispose={null}
+          />
+        );
+      })}
+
+      {Array.isArray(activeHighlight?.pos) && activeHighlight.pos.length === 3 && activeHighlight.pos.every(Number.isFinite) && (
+        <group position={activeHighlight.pos}>
+          <mesh geometry={SING_POSE_SPHERE_GEOM} material={SING_ACTIVE_MAT} scale={1.5} dispose={null} />
+          <mesh geometry={SING_HALO_GEOM} material={SING_HALO_MAT} dispose={null} />
+          <mesh geometry={SING_HALO_GEOM} material={SING_HALO_MAT} rotation={[Math.PI / 2, 0, 0]} dispose={null} />
+        </group>
+      )}
+    </group>
+  );
+}
+
 function CollisionMarker({ position }) {
   if (!Array.isArray(position) || position.length !== 3 || !position.every(Number.isFinite)) return null;
   return <group position={position}>
@@ -560,6 +660,7 @@ function Scene({
   showTrajectory,
   onSelectWaypoint,
   customStlGeometry,
+  customLinkStls = null,
   toolType,
   toolOffsetRpy,
   toolGrip,
@@ -569,6 +670,8 @@ function Scene({
   onSelectJoint,
   ellipsoid,
   showEllipsoid = false,
+  singularityReport = null,
+  activeSingularityHighlight = null,
   ghostJoints,
   showGhost = false,
   ikTarget,
@@ -617,6 +720,7 @@ function Scene({
       joints={joints}
       showFrames={showFrames}
       customStlGeometry={customStlGeometry}
+      customLinkStls={customLinkStls}
       toolType={toolType}
       toolOffsetRpy={toolOffsetRpy}
       toolGrip={toolGrip}
@@ -626,6 +730,7 @@ function Scene({
       onSelectJoint={onSelectJoint}
     />
     <ManipulabilityEllipsoid position={endPosition} ellipsoid={ellipsoid} visible={showEllipsoid} />
+    <SingularityHighlights report={singularityReport} activeHighlight={activeSingularityHighlight} />
     <WorkspacePoints cloud={workspaceCloud} visible={showWorkspace} />
     <TrajectoryVisualizer
       pathPoints={trajectoryPathPoints}

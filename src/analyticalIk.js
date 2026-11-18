@@ -161,6 +161,11 @@ export function postureId(arch, posture) {
   return axes.map(a => `${a.key}:${posture?.[a.key] || '?'}`).join('|');
 }
 
+/**
+ * Detects whether DH parameters match a supported closed-form robot family.
+ * @param {import('./types.js').Joint[]} joints
+ * @returns {'scara' | 'puma560' | 'ur5' | null}
+ */
 export function detectAnalyticalArchitecture(joints) {
   if (!Array.isArray(joints)) return null;
 
@@ -201,16 +206,24 @@ export function detectAnalyticalArchitecture(joints) {
   return null;
 }
 
+/**
+ * Classifies the physical posture branch (shoulder, elbow, wrist) of a joint configuration.
+ * @param {import('./types.js').Joint[]} joints
+ * @param {'scara' | 'puma560' | 'ur5' | null} [arch]
+ * @returns {{ shoulder?: string, elbow?: string, wrist?: string } | null}
+ */
 export function classifyPosture(joints, arch = detectAnalyticalArchitecture(joints)) {
-  if (!arch) return null;
+  if (!arch || !Array.isArray(joints)) return null;
 
   if (arch === 'scara') {
+    if (joints.length < 4) return null;
     const [j0, j1] = joints;
     const cross = j0.a * j1.a * Math.sin(j1.val * DEG);
     return { elbow: cross >= -1e-9 ? 'left' : 'right' };
   }
 
   if (arch === 'puma560') {
+    if (joints.length < 6) return null;
     const [j0, j1, j2, j3, j4] = joints;
     const t01 = dhTransform(j0.a, j0.alpha, j0.d, j0.val);
     const t12 = dhTransform(j1.a, j1.alpha, j1.d, j1.val);
@@ -240,6 +253,7 @@ export function classifyPosture(joints, arch = detectAnalyticalArchitecture(join
   }
 
   if (arch === 'ur5') {
+    if (joints.length < 6) return null;
     const [j0, j1, j2, j3, j4] = joints;
     const t01 = dhTransform(j0.a, j0.alpha, j0.d, j0.val);
     const t12 = dhTransform(j1.a, j1.alpha, j1.d, j1.val);
@@ -633,6 +647,13 @@ function deduplicateBranches(candidates, arch) {
   return seen;
 }
 
+/**
+ * Generates raw analytical IK branch candidates within [min, max] angular limits.
+ * @param {import('./types.js').Joint[]} joints
+ * @param {import('./types.js').CartesianTarget} target
+ * @param {import('./types.js').TaskMode} [mode]
+ * @returns {Array<{ id: string, joints: import('./types.js').Joint[], posture: Record<string, string> | null, architecture: 'scara' | 'puma560' | 'ur5', label: string }>}
+ */
 export function generateAnalyticalCandidates(joints, target, mode = 'pose') {
   const arch = detectAnalyticalArchitecture(joints);
   if (!arch || !target || !Array.isArray(target.position)) return [];

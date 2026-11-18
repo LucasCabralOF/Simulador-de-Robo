@@ -25,4 +25,11 @@ endsolid test_triangle
   const dx = box.max.x - box.min.x;
   const dy = box.max.y - box.min.y;
   assert.ok(Math.abs(Math.max(dx, dy) - 0.6) < 0.001);
+
+  // Custom targetSize option normalizes link meshes to unit span cleanly
+  const unitGeometry = parseStlBuffer(buffer, { targetSize: 1.0 });
+  unitGeometry.computeBoundingBox();
+  const uBox = unitGeometry.boundingBox;
+  const uMax = Math.max(uBox.max.x - uBox.min.x, uBox.max.y - uBox.min.y);
+  assert.ok(Math.abs(uMax - 1.0) < 0.001);
 });

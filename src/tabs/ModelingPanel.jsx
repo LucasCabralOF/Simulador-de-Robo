@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
-import { Palette } from 'lucide-react';
-import { Button, SegmentedTabs, Select, Slider } from '../ui';
+import { Palette, Trash2, Upload } from 'lucide-react';
+import { Button, FileUploadButton, SegmentedTabs, Select, Slider } from '../ui';
 import {
   DEFAULT_JOINT_COLORS,
   JOINT_CHART_PALETTE,
@@ -46,6 +46,11 @@ const ModelingPanel = memo(function ModelingPanel({
   setModelStyle,
   modelTarget,
   setModelTarget,
+  customLinkStls = {},
+  onUploadLinkStl,
+  onScaleLinkStl,
+  onRemoveLinkStl,
+  urdfMeshHints = {},
   numeric,
 }) {
   const [colorChannel, setColorChannel] = useState('joint');
@@ -64,6 +69,9 @@ const ModelingPanel = memo(function ModelingPanel({
     ? MODEL_STYLE_SLIDERS.filter(s => s.key === 'linkRadius' || (targetJoint.type === 'R' ? s.key.startsWith('rev') : s.key.startsWith('prism')))
     : MODEL_STYLE_SLIDERS;
   const hasPerJoint = Boolean(modelStyle.perJoint && Object.keys(modelStyle.perJoint).length > 0);
+  const currentLinkStl = targetJoint ? (customLinkStls[String(targetJoint.id)] || null) : null;
+  const currentLinkMeshHint = targetJoint ? (urdfMeshHints[String(targetJoint.id)] || null) : null;
+  const linkStlCount = Object.keys(customLinkStls).length;
 
   const applyStyleEdit = (patch) => {
     if (!targetJoint) {
@@ -143,7 +151,7 @@ const ModelingPanel = memo(function ModelingPanel({
               { value: 'global', label: 'Padrão global (todos os elos e eixos)' },
               ...joints.map((j, idx) => ({
                 value: String(j.id),
-                label: `Eixo / Ligação ${idx + 1} (${j.type})${modelStyle.perJoint?.[String(j.id)] ? ' · Personalizado' : ''}`,
+                label: `Eixo / Ligação ${idx + 1} (${j.type})${customLinkStls[String(j.id)] ? ' · STL' : modelStyle.perJoint?.[String(j.id)] ? ' · Personalizado' : ''}`,
               })),
             ]}
           />
@@ -343,6 +351,65 @@ const ModelingPanel = memo(function ModelingPanel({
           </div>
         )}
       </div>
+      {targetJoint ? (
+        <div className="ik-slider-card model-stl-card">
+          <div className="ik-slider-header">
+            <div className="ik-slider-meta">
+              <strong>Malha CAD (STL) · Elo {targetIdx + 1}</strong>
+              <span className="muted">
+                {currentLinkStl
+                  ? `Ativa: ${currentLinkStl.fileName}`
+                  : currentLinkMeshHint
+                    ? `URDF refere: ${currentLinkMeshHint.fileName}`
+                    : 'Substitui a haste padrão deste elo por um .stl'}
+              </span>
+            </div>
+            <div className="model-stl-actions">
+              <FileUploadButton
+                accept=".stl"
+                onChange={e => onUploadLinkStl?.(targetJoint.id, e)}
+                inputAriaLabel={`Upload STL do elo ${targetIdx + 1}`}
+              >
+                <Upload size={13} aria-hidden="true" />
+                {currentLinkStl ? 'Trocar .stl' : 'Anexar .stl'}
+              </FileUploadButton>
+              {currentLinkStl && (
+                <Button
+                  type="button"
+                  variant="danger"
+                  aria-label={`Remover STL do elo ${targetIdx + 1}`}
+                  onClick={() => onRemoveLinkStl?.(targetJoint.id)}
+                >
+                  <Trash2 size={13} aria-hidden="true" />
+                </Button>
+              )}
+            </div>
+          </div>
+          {currentLinkStl && (
+            <>
+              <div className="ik-slider-header">
+                <span className="muted">Escala do STL ({fmt(currentLinkStl.scale ?? 1, 2)}×)</span>
+                {numeric(`Escala STL elo ${targetIdx + 1}`, currentLinkStl.scale ?? 1, next => onScaleLinkStl?.(targetJoint.id, next), { min: 0.3, max: 3.0, compact: true })}
+              </div>
+              <Slider
+                ariaLabel={`Escala da malha STL do elo ${targetIdx + 1}`}
+                ariaValueText={`${fmt(currentLinkStl.scale ?? 1, 2)}×`}
+                min={0.3}
+                max={3.0}
+                step={0.05}
+                value={currentLinkStl.scale ?? 1}
+                onChange={next => onScaleLinkStl?.(targetJoint.id, next)}
+              />
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="muted model-stl-global-hint">
+          {linkStlCount > 0
+            ? `${linkStlCount} elo(s) com malha STL personalizada. Escolha o elo acima para editar escala ou trocar arquivo.`
+            : 'Selecione um "Eixo / Ligação" acima para anexar uma malha STL personalizada ao elo.'}
+        </div>
+      )}
       {targetJoint && activeStyle.overridden && (
         <div className="action-row">
           <Button onClick={clearJointOverride}>Usar padrão global neste eixo</Button>

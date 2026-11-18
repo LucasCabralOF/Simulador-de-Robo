@@ -25,6 +25,10 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
   const spec = TOOL_TYPES[toolConfig?.toolType] || TOOL_TYPES.gripper;
   const hasModelStyle = Boolean(toolConfig?.modelStyle && typeof toolConfig.modelStyle === 'object');
   const style = normalizeModelStyle(toolConfig?.modelStyle);
+  const linkMeshes = toolConfig?.linkMeshes && typeof toolConfig.linkMeshes === 'object' ? toolConfig.linkMeshes : null;
+  const toolMeshFileName = typeof toolConfig?.toolMeshFileName === 'string' && toolConfig.toolMeshFileName.trim()
+    ? toolConfig.toolMeshFileName.trim()
+    : null;
   const offsetRpy = Array.isArray(toolConfig?.toolOffsetRpy) && toolConfig.toolOffsetRpy.length === 3
     ? toolConfig.toolOffsetRpy.map(v => (Number.isFinite(Number(v)) ? round(Number(v), 2) : 0))
     : [...DEFAULT_TOOL_OFFSET_RPY];
@@ -126,11 +130,19 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
     // Link representation
     const linkLength = Math.max(0.2, Math.sqrt(x * x + z * z));
     const jStyle = resolveJointModelStyle(style, joint.id ?? jointNum);
-    const linkGeomXml = jStyle.linkShape === 'square'
+    const customMesh = linkMeshes?.[String(joint.id ?? jointNum)] || linkMeshes?.[String(jointNum)];
+    const meshSafeName = customMesh?.fileName ? String(customMesh.fileName).replace(/^.*[/\\]/, '').replace(/"/g, '') : '';
+    const meshScale = customMesh?.scale !== undefined && Number.isFinite(Number(customMesh.scale))
+      ? round(Math.max(0.1, Number(customMesh.scale)), 3)
+      : 1;
+    const collisionGeomXml = jStyle.linkShape === 'square'
       ? `<box size="${round(jStyle.linkRadius * 2)} ${round(jStyle.linkRadius * 2)} ${round(linkLength)}"/>`
       : jStyle.linkShape === 'flat'
         ? `<box size="${round(jStyle.linkRadius * 2.4)} ${round(jStyle.linkRadius * 1.1)} ${round(linkLength)}"/>`
         : `<cylinder radius="${hasModelStyle ? round(jStyle.linkRadius) : 0.08}" length="${round(linkLength)}"/>`;
+    const linkGeomXml = meshSafeName
+      ? `<mesh filename="package://${cleanName}/meshes/${meshSafeName}" scale="${meshScale} ${meshScale} ${meshScale}"/>`
+      : collisionGeomXml;
     xml += `  <link name="${linkName}">\n`;
     xml += `    <visual>\n`;
     xml += `      <origin xyz="${round(x / 2)} 0 ${round(z / 2)}" rpy="0 0 0"/>\n`;
@@ -139,7 +151,7 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
     xml += `    </visual>\n`;
     xml += `    <collision>\n`;
     xml += `      <origin xyz="${round(x / 2)} 0 ${round(z / 2)}" rpy="0 0 0"/>\n`;
-    xml += `      <geometry>\n        ${linkGeomXml}\n      </geometry>\n`;
+    xml += `      <geometry>\n        ${collisionGeomXml}\n      </geometry>\n`;
     xml += `    </collision>\n`;
     xml += `  </link>\n\n`;
 
@@ -147,12 +159,16 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
   });
 
   // End-effector tool attachment + TCP link
+  const toolMeshSafeName = toolMeshFileName ? toolMeshFileName.replace(/^.*[/\\]/, '').replace(/"/g, '') : '';
+  const toolGeomXml = toolMeshSafeName
+    ? `<mesh filename="package://${cleanName}/meshes/${toolMeshSafeName}" scale="1 1 1"/>`
+    : `<cylinder radius="${round(spec.radius / 2)}" length="${round(spec.length)}"/>`;
   xml += `  <!-- Tool0 / End-Effector (${spec.shortLabel}) -->\n`;
   xml += `  <link name="tool0">\n`;
-  xml += `    <tool_config type="${spec.id}" offset_rpy="${offsetRpy.join(' ')}"/>\n`;
+  xml += `    <tool_config type="${spec.id}" offset_rpy="${offsetRpy.join(' ')}"${toolMeshSafeName ? ` mesh_file="${toolMeshSafeName}"` : ''}/>\n`;
   xml += `    <visual>\n`;
   xml += `      <origin xyz="${round(spec.length / 2)} 0 0" rpy="0 0 0"/>\n`;
-  xml += `      <geometry>\n        <cylinder radius="${round(spec.radius / 2)}" length="${round(spec.length)}"/>\n      </geometry>\n`;
+  xml += `      <geometry>\n        ${toolGeomXml}\n      </geometry>\n`;
   xml += `      <material name="tool_gold"/>\n`;
   xml += `    </visual>\n`;
   xml += `  </link>\n\n`;
@@ -197,6 +213,31 @@ export function parseURDF(urdfString) {
   let parsedToolType = null;
   let parsedOffsetRpy = [0, 0, 0];
   let parsedModelStyle = null;
+  let parsedToolMeshFileName = null;
+  const linkMeshByName = {};
+  const linkRegex = /<link\b([^>]*?)(?:\/>|>([\s\S]*?)<\/link>)/gi;
+  let linkMatch;
+  while ((linkMatch = linkRegex.exec(urdfString)) !== null) {
+    const linkName = extractAttr(linkMatch[1], 'name');
+    const linkBody = linkMatch[2] || '';
+    if (!linkName || !linkBody) continue;
+    const visualMatch = /<visual\b[\s\S]*?>([\s\S]*?)<\/visual>/i.exec(linkBody);
+    const searchBody = visualMatch ? visualMatch[1] : linkBody;
+    const meshMatch = /<mesh\b([^>]*?)\/?>/i.exec(searchBody);
+    if (meshMatch) {
+      const filename = extractAttr(meshMatch[1], 'filename');
+      if (filename) {
+        const scaleAttr = extractAttr(meshMatch[1], 'scale');
+        const scaleNums = scaleAttr ? scaleAttr.trim().split(/\s+/).map(Number).filter(Number.isFinite) : [];
+        const scale = scaleNums.length > 0 && scaleNums[0] > 0 ? scaleNums[0] : 1;
+        linkMeshByName[linkName] = {
+          fileName: filename.replace(/^.*[/\\]/, ''),
+          uri: filename,
+          scale,
+        };
+      }
+    }
+  }
   const toolConfigMatch = /<tool_config\b([\s\S]*?)\/?>/i.exec(urdfString);
   if (toolConfigMatch) {
     const tAttr = extractAttr(toolConfigMatch[1], 'type');
@@ -206,6 +247,11 @@ export function parseURDF(urdfString) {
       const nums = offAttr.trim().split(/\s+/).map(Number);
       if (nums.length === 3 && nums.every(Number.isFinite)) parsedOffsetRpy = nums;
     }
+    const tmAttr = extractAttr(toolConfigMatch[1], 'mesh_file');
+    if (tmAttr && tmAttr.trim()) parsedToolMeshFileName = tmAttr.trim();
+  }
+  if (!parsedToolMeshFileName && linkMeshByName.tool0?.fileName) {
+    parsedToolMeshFileName = linkMeshByName.tool0.fileName;
   }
   const modelStyleMatch = /<model_style\b([^>]*)>/i.exec(urdfString);
   if (modelStyleMatch) {
@@ -244,6 +290,7 @@ export function parseURDF(urdfString) {
   // Extract all <joint> blocks
   const jointRegex = /<joint\b([\s\S]*?)>([\s\S]*?)<\/joint>/gi;
   const parsedJoints = [];
+  const parsedLinkMeshes = {};
   let match;
 
   while ((match = jointRegex.exec(urdfString)) !== null) {
@@ -313,9 +360,15 @@ export function parseURDF(urdfString) {
     }
 
     const defaultVal = type === 'R' ? 0 : Math.max(0, d);
+    const childMatch = /<child\b([^>]*?)\/?>/i.exec(jointBody);
+    const childLinkName = childMatch ? extractAttr(childMatch[1], 'link') : null;
+    const jId = parsedJoints.length + 1;
+    if (childLinkName && linkMeshByName[childLinkName]) {
+      parsedLinkMeshes[String(jId)] = linkMeshByName[childLinkName];
+    }
 
     parsedJoints.push({
-      id: parsedJoints.length + 1,
+      id: jId,
       type,
       a,
       alpha,
@@ -332,12 +385,15 @@ export function parseURDF(urdfString) {
     throw new Error('Nenhuma junta móvel (revolute/prismatic) encontrada no arquivo URDF.');
   }
 
-  if (parsedToolType || parsedOffsetRpy.some(v => Math.abs(v) > 1e-6) || parsedModelStyle) {
+  const hasParsedLinkMeshes = Object.keys(parsedLinkMeshes).length > 0;
+  if (parsedToolType || parsedOffsetRpy.some(v => Math.abs(v) > 1e-6) || parsedModelStyle || hasParsedLinkMeshes || parsedToolMeshFileName) {
     const toolCfgValue = {
       toolType: parsedToolType || 'gripper',
       toolOffsetRpy: parsedOffsetRpy,
     };
     if (parsedModelStyle) toolCfgValue.modelStyle = parsedModelStyle;
+    if (hasParsedLinkMeshes) toolCfgValue.linkMeshes = parsedLinkMeshes;
+    if (parsedToolMeshFileName) toolCfgValue.toolMeshFileName = parsedToolMeshFileName;
     Object.defineProperty(parsedJoints, 'toolConfig', {
       value: toolCfgValue,
       enumerable: false,

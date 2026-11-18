@@ -12,7 +12,9 @@ function nudgeJoint(joint, delta) {
 
 /**
  * Builds default Home / Ponto A / Ponto B waypoints compatible with any joint architecture
- * arranged as an asymmetric non-collinear triangle within joint limits
+ * arranged as an asymmetric non-collinear triangle within joint limits.
+ * @param {import('./types.js').Joint[]} joints
+ * @returns {import('./types.js').Waypoint[]}
  */
 export function defaultWaypointsForJoints(joints) {
   if (!Array.isArray(joints) || joints.length === 0) return [];
@@ -37,7 +39,10 @@ export function defaultWaypointsForJoints(joints) {
 }
 
 /**
- * Synchronizes existing waypoints to match the current joints length and [min, max] limits
+ * Synchronizes existing waypoints to match the current joints length and [min, max] limits.
+ * @param {import('./types.js').Waypoint[]} waypoints
+ * @param {import('./types.js').Joint[]} joints
+ * @returns {import('./types.js').Waypoint[]}
  */
 export function syncWaypointsToJoints(waypoints, joints) {
   if (!Array.isArray(waypoints)) return [];
@@ -390,7 +395,13 @@ function getCachedCartesianSegments(waypoints, jointsTemplate, stepsPerSegment =
 }
 
 /**
- * Evaluates the full robot joint state at a specific time t
+ * Evaluates the full robot joint state at a specific time t.
+ * @param {import('./types.js').Waypoint[]} waypoints
+ * @param {number} time
+ * @param {string} [type]
+ * @param {import('./types.js').Joint[] | null} [jointsTemplate]
+ * @param {import('./types.js').EnvironmentConfig | null} [environment]
+ * @returns {{ q: number[], velocities: number[], segmentIndex: number, progress: number, blocked?: boolean } | null}
  */
 export function evaluateTrajectory(waypoints, time, type = 'quintic', jointsTemplate = null, environment = null) {
   if (!Array.isArray(waypoints) || waypoints.length === 0) {
@@ -493,7 +504,13 @@ export function evaluateTrajectory(waypoints, time, type = 'quintic', jointsTemp
 }
 
 /**
- * Samples the 3D trajectory path curve for visualization in Three.js
+ * Samples the 3D trajectory path curve and kinematic profiles for visualization in Three.js and SVG charts.
+ * @param {import('./types.js').Waypoint[]} waypoints
+ * @param {import('./types.js').Joint[]} jointsTemplate
+ * @param {number} [numSamples]
+ * @param {string} [interpType]
+ * @param {import('./types.js').EnvironmentConfig | null} [environment]
+ * @returns {import('./types.js').TrajectoryData}
  */
 export function sampleTrajectoryPath(waypoints, jointsTemplate, numSamples, interpType = 'quintic', environment = null) {
   if (!Array.isArray(waypoints) || waypoints.length < 2) {

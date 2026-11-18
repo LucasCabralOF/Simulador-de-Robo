@@ -60,8 +60,10 @@ export function heatColor(t) {
 
 /**
  * Monte Carlo workspace point cloud generation
- * @param {Array} joints - Model joint definitions
- * @param {number} count - Number of random configurations to sample (default 2000)
+ * @param {import('./types.js').Joint[]} joints - Model joint definitions
+ * @param {number} [count] - Number of random configurations to sample (default 2000)
+ * @param {import('./types.js').EnvironmentConfig | null} [environment] - Floor and 3D obstacle settings
+ * @returns {import('./types.js').WorkspaceCloud}
  */
 export function generateWorkspaceCloud(joints, count = 2000, environment = null) {
   const n = Math.max(100, Math.min(10000, count));
@@ -922,6 +924,11 @@ function evaluateCartesianSliceBounds(joints, referencePos = null, mode = 'posit
  * Deterministically estimates the reachable Cartesian bounds [min, max] per axis.
  * When `referencePos` is supplied, adapts each active axis interval to the robot's
  * current pose, transverse coordinates, joint [min, max] limits, and self-collision rules.
+ * @param {import('./types.js').Joint[]} joints
+ * @param {import('./types.js').Vec3 | null} [referencePos]
+ * @param {import('./types.js').TaskMode} [mode]
+ * @param {import('./types.js').EnvironmentConfig | null} [environment]
+ * @returns {{ min: import('./types.js').Vec3, max: import('./types.js').Vec3, span: import('./types.js').Vec3 }}
  */
 export function computeCartesianBounds(joints, referencePos = null, mode = 'position', environment = null) {
   const { min, max, span } = evaluateCartesianSliceBounds(joints, referencePos, mode, environment, {
@@ -934,6 +941,9 @@ export function computeCartesianBounds(joints, referencePos = null, mode = 'posi
  * Comprehensive singularity analysis for the dedicated Singularidades tab:
  * computes 1D Cartesian slice intervals + Yoshikawa profiles along active X/Y/Z lines,
  * single-joint sweep dips, and spatially diverse critical 3D configurations.
+ * @param {import('./types.js').Joint[]} joints
+ * @param {{ referencePos?: import('./types.js').Vec3 | null, mode?: import('./types.js').TaskMode, environment?: import('./types.js').EnvironmentConfig | null }} [options]
+ * @returns {import('./types.js').SingularityReport}
  */
 export function analyzeRobotSingularities(joints, { referencePos = null, mode = 'position', environment = null } = {}) {
   if (!Array.isArray(joints) || joints.length === 0) {

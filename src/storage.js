@@ -57,6 +57,12 @@ function offlineSimRequest(path = '', options = {}) {
   throw new Error('Operação indisponível no modo offline.');
 }
 
+/**
+ * Performs a simulation API request with transparent offline localStorage fallback.
+ * @param {string} [path]
+ * @param {RequestInit} [options]
+ * @returns {Promise<any>}
+ */
 export async function request(path = '', options = {}) {
   const canOfflineFallback = path === '' || path === '/' || (/^\/[^/]+$/.test(path) && path !== '/share');
   let res;
@@ -86,6 +92,11 @@ export async function fetchSharedSimulation(slug, signal) {
   return res.json();
 }
 
+/**
+ * Normalizes workbench floor and 3D obstacle settings.
+ * @param {Partial<import('./types.js').EnvironmentConfig> | null | undefined} env
+ * @returns {import('./types.js').EnvironmentConfig}
+ */
 export function normalizeEnvironment(env) {
   if (!env || typeof env !== 'object') {
     return {
@@ -108,6 +119,11 @@ export function normalizeEnvironment(env) {
   };
 }
 
+/**
+ * Deep-clones undo/redo simulator state snapshot.
+ * @param {import('./types.js').SimulationSnapshot} snapshot
+ * @returns {import('./types.js').SimulationSnapshot}
+ */
 export function cloneSnapshot({ joints, toolType, toolOffsetRpy, toolGrip, toolScale, modelStyle, environment, waypoints }) {
   return {
     joints: joints.map(j => ({ ...j })),
