@@ -1,7 +1,7 @@
 // Universal URDF (Unified Robot Description Format) Parser & Exporter
 // Works seamlessly in both Node.js (test/server) and Browser environments.
 
-import { TOOL_TYPES } from './kinematics.js';
+import { DEFAULT_TOOL_OFFSET_RPY, TOOL_TYPES, normalizeModelStyle, resolveJointModelStyle } from './kinematics.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -23,9 +23,11 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
   }
 
   const spec = TOOL_TYPES[toolConfig?.toolType] || TOOL_TYPES.gripper;
+  const hasModelStyle = Boolean(toolConfig?.modelStyle && typeof toolConfig.modelStyle === 'object');
+  const style = normalizeModelStyle(toolConfig?.modelStyle);
   const offsetRpy = Array.isArray(toolConfig?.toolOffsetRpy) && toolConfig.toolOffsetRpy.length === 3
     ? toolConfig.toolOffsetRpy.map(v => (Number.isFinite(Number(v)) ? round(Number(v), 2) : 0))
-    : [0, 0, 0];
+    : [...DEFAULT_TOOL_OFFSET_RPY];
   const offsetRpyRad = offsetRpy.map(v => round(v * DEG2RAD));
 
   const cleanName = robotName.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase() || 'dh_robot';
@@ -41,6 +43,26 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
 
   // Base link (pedestal)
   xml += `  <link name="base_link">\n`;
+  if (hasModelStyle) {
+    const baseAttrs = `link_shape="${style.linkShape}" link_radius="${round(style.linkRadius)}" rev_radius="${round(style.revRadius)}" rev_length="${round(style.revLength)}" prism_width="${round(style.prismWidth)}" prism_length="${round(style.prismLength)}"`;
+    const perEntries = style.perJoint ? Object.entries(style.perJoint) : [];
+    if (perEntries.length === 0) {
+      xml += `    <model_style ${baseAttrs}/>\n`;
+    } else {
+      xml += `    <model_style ${baseAttrs}>\n`;
+      for (const [jid, ov] of perEntries) {
+        const attrs = [`id="${jid}"`];
+        if (ov.linkShape) attrs.push(`link_shape="${ov.linkShape}"`);
+        if (ov.linkRadius !== undefined) attrs.push(`link_radius="${round(ov.linkRadius)}"`);
+        if (ov.revRadius !== undefined) attrs.push(`rev_radius="${round(ov.revRadius)}"`);
+        if (ov.revLength !== undefined) attrs.push(`rev_length="${round(ov.revLength)}"`);
+        if (ov.prismWidth !== undefined) attrs.push(`prism_width="${round(ov.prismWidth)}"`);
+        if (ov.prismLength !== undefined) attrs.push(`prism_length="${round(ov.prismLength)}"`);
+        xml += `      <joint_style ${attrs.join(' ')}/>\n`;
+      }
+      xml += `    </model_style>\n`;
+    }
+  }
   xml += `    <visual>\n`;
   xml += `      <origin xyz="0 0 0.1" rpy="0 0 0"/>\n`;
   xml += `      <geometry>\n        <cylinder radius="0.35" length="0.2"/>\n      </geometry>\n`;
@@ -90,15 +112,21 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
 
     // Link representation
     const linkLength = Math.max(0.2, Math.sqrt(x * x + z * z));
+    const jStyle = resolveJointModelStyle(style, joint.id ?? jointNum);
+    const linkGeomXml = jStyle.linkShape === 'square'
+      ? `<box size="${round(jStyle.linkRadius * 2)} ${round(jStyle.linkRadius * 2)} ${round(linkLength)}"/>`
+      : jStyle.linkShape === 'flat'
+        ? `<box size="${round(jStyle.linkRadius * 2.4)} ${round(jStyle.linkRadius * 1.1)} ${round(linkLength)}"/>`
+        : `<cylinder radius="${hasModelStyle ? round(jStyle.linkRadius) : 0.08}" length="${round(linkLength)}"/>`;
     xml += `  <link name="${linkName}">\n`;
     xml += `    <visual>\n`;
     xml += `      <origin xyz="${round(x / 2)} 0 ${round(z / 2)}" rpy="0 0 0"/>\n`;
-    xml += `      <geometry>\n        <cylinder radius="0.08" length="${round(linkLength)}"/>\n      </geometry>\n`;
+    xml += `      <geometry>\n        ${linkGeomXml}\n      </geometry>\n`;
     xml += `      <material name="link_accent"/>\n`;
     xml += `    </visual>\n`;
     xml += `    <collision>\n`;
     xml += `      <origin xyz="${round(x / 2)} 0 ${round(z / 2)}" rpy="0 0 0"/>\n`;
-    xml += `      <geometry>\n        <cylinder radius="0.08" length="${round(linkLength)}"/>\n      </geometry>\n`;
+    xml += `      <geometry>\n        ${linkGeomXml}\n      </geometry>\n`;
     xml += `    </collision>\n`;
     xml += `  </link>\n\n`;
 
@@ -155,6 +183,7 @@ export function parseURDF(urdfString) {
 
   let parsedToolType = null;
   let parsedOffsetRpy = [0, 0, 0];
+  let parsedModelStyle = null;
   const toolConfigMatch = /<tool_config\b([\s\S]*?)\/?>/i.exec(urdfString);
   if (toolConfigMatch) {
     const tAttr = extractAttr(toolConfigMatch[1], 'type');
@@ -164,6 +193,34 @@ export function parseURDF(urdfString) {
       const nums = offAttr.trim().split(/\s+/).map(Number);
       if (nums.length === 3 && nums.every(Number.isFinite)) parsedOffsetRpy = nums;
     }
+  }
+  const modelStyleMatch = /<model_style\b([^>]*)>/i.exec(urdfString);
+  if (modelStyleMatch) {
+    const perJoint = {};
+    const jointStyleRegex = /<joint_style\b([^>]*?)\/?>/gi;
+    let jsMatch;
+    while ((jsMatch = jointStyleRegex.exec(urdfString)) !== null) {
+      const attrsStr = jsMatch[1];
+      const idAttr = extractAttr(attrsStr, 'id');
+      if (!idAttr || !/^\d+$/.test(idAttr)) continue;
+      perJoint[idAttr] = {
+        ...(extractAttr(attrsStr, 'link_shape') ? { linkShape: extractAttr(attrsStr, 'link_shape') } : {}),
+        ...(extractAttr(attrsStr, 'link_radius') !== null ? { linkRadius: extractAttr(attrsStr, 'link_radius') } : {}),
+        ...(extractAttr(attrsStr, 'rev_radius') !== null ? { revRadius: extractAttr(attrsStr, 'rev_radius') } : {}),
+        ...(extractAttr(attrsStr, 'rev_length') !== null ? { revLength: extractAttr(attrsStr, 'rev_length') } : {}),
+        ...(extractAttr(attrsStr, 'prism_width') !== null ? { prismWidth: extractAttr(attrsStr, 'prism_width') } : {}),
+        ...(extractAttr(attrsStr, 'prism_length') !== null ? { prismLength: extractAttr(attrsStr, 'prism_length') } : {}),
+      };
+    }
+    parsedModelStyle = normalizeModelStyle({
+      linkShape: extractAttr(modelStyleMatch[1], 'link_shape'),
+      linkRadius: extractAttr(modelStyleMatch[1], 'link_radius'),
+      revRadius: extractAttr(modelStyleMatch[1], 'rev_radius'),
+      revLength: extractAttr(modelStyleMatch[1], 'rev_length'),
+      prismWidth: extractAttr(modelStyleMatch[1], 'prism_width'),
+      prismLength: extractAttr(modelStyleMatch[1], 'prism_length'),
+      perJoint,
+    });
   }
 
   // Extract all <joint> blocks
@@ -257,12 +314,14 @@ export function parseURDF(urdfString) {
     throw new Error('Nenhuma junta móvel (revolute/prismatic) encontrada no arquivo URDF.');
   }
 
-  if (parsedToolType || parsedOffsetRpy.some(v => Math.abs(v) > 1e-6)) {
+  if (parsedToolType || parsedOffsetRpy.some(v => Math.abs(v) > 1e-6) || parsedModelStyle) {
+    const toolCfgValue = {
+      toolType: parsedToolType || 'gripper',
+      toolOffsetRpy: parsedOffsetRpy,
+    };
+    if (parsedModelStyle) toolCfgValue.modelStyle = parsedModelStyle;
     Object.defineProperty(parsedJoints, 'toolConfig', {
-      value: {
-        toolType: parsedToolType || 'gripper',
-        toolOffsetRpy: parsedOffsetRpy,
-      },
+      value: toolCfgValue,
       enumerable: false,
       configurable: true,
     });

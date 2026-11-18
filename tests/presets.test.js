@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PRESETS, PRESET_LIST } from '../src/presets.js';
-import { DEFAULT_JOINTS, forwardKinematics, inverseKinematics, validateJoints } from '../src/kinematics.js';
+import { DEFAULT_JOINTS, computeToolFrame, forwardKinematics, inverseKinematics, validateJoints } from '../src/kinematics.js';
 import { computeCartesianBounds, generateWorkspaceCloud } from '../src/workspace.js';
 import { generateCpp, generatePython, generateRos2 } from '../src/codeGenerator.js';
 
@@ -108,5 +108,40 @@ test('computeCartesianBounds adapts slider limits to current robot pose and late
   assert.ok(sliceUr5.max[2] < globalUr5.max[2] - 4.0, `Expected contracted UR5 Z max < ${globalUr5.max[2]}, got ${sliceUr5.max[2]}`);
   for (let axis = 0; axis < 3; axis++) {
     assert.ok(sliceUr5.min[axis] <= endUr5[axis] + 1e-6 && sliceUr5.max[axis] >= endUr5[axis] - 1e-6);
+  }
+});
+
+test('PRP Espacial preset satisfies cylindrical analytical kinematics from P2 Question 3', () => {
+  const prp = PRESETS.prp.joints;
+  const fk = forwardKinematics(prp);
+  const d1 = prp[0].val;
+  const theta2Rad = (prp[1].val * Math.PI) / 180;
+  const d3 = prp[2].val;
+  const end = fk.positions.at(-1);
+
+  assert.ok(Math.abs(end[0] - d3 * Math.cos(theta2Rad)) < 1e-9);
+  assert.ok(Math.abs(end[1] - d3 * Math.sin(theta2Rad)) < 1e-9);
+  assert.ok(Math.abs(end[2] - d1) < 1e-9);
+});
+
+test('all default robot presets orient the end-effector straight outward along the last connected link', () => {
+  for (const preset of PRESET_LIST) {
+    assert.ok(Array.isArray(preset.toolOffsetRpy) && preset.toolOffsetRpy.length === 3, `${preset.id} missing toolOffsetRpy`);
+    const fk = forwardKinematics(preset.joints);
+    const tool = computeToolFrame(fk.total, preset.toolOffsetRpy);
+    let linkDir = null;
+    for (let i = fk.positions.length - 1; i > 0; i--) {
+      const dx = fk.positions[i][0] - fk.positions[i - 1][0];
+      const dy = fk.positions[i][1] - fk.positions[i - 1][1];
+      const dz = fk.positions[i][2] - fk.positions[i - 1][2];
+      const len = Math.hypot(dx, dy, dz);
+      if (len > 1e-6) {
+        linkDir = [dx / len, dy / len, dz / len];
+        break;
+      }
+    }
+    assert.ok(linkDir, `${preset.id} has no non-zero link`);
+    const dot = tool.approach[0] * linkDir[0] + tool.approach[1] * linkDir[1] + tool.approach[2] * linkDir[2];
+    assert.ok(Math.abs(dot - 1) < 1e-6, `${preset.id} tool approach not parallel/straight out from last link (dot=${dot})`);
   }
 });

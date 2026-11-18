@@ -1,4 +1,4 @@
-import { computeToolFrame, forwardKinematics, jacobianDiagnostics, matrixRows } from './kinematics.js';
+import { DEFAULT_TOOL_OFFSET_RPY, computeToolFrame, forwardKinematics, jacobianDiagnostics, matrixRows } from './kinematics.js';
 
 const fmt = (n, digits = 4) => !Number.isFinite(n) ? 'inf' : (Math.abs(n) < 0.5 * 10 ** -digits ? 0 : n).toFixed(digits);
 
@@ -10,7 +10,7 @@ export function generateAcademicReportHtml(joints, metadata = {}) {
     robotName = `Manipulador ${joints.map(j => j.type).join('')}`,
     date = new Date().toLocaleDateString('pt-BR'),
     toolType = 'gripper',
-    toolOffsetRpy = [0, 0, 0],
+    toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY,
     toolGrip = 50,
   } = metadata;
 
@@ -19,7 +19,7 @@ export function generateAcademicReportHtml(joints, metadata = {}) {
   const end = fk.positions.at(-1);
   const safeOffsetRpy = Array.isArray(toolOffsetRpy) && toolOffsetRpy.length === 3
     ? toolOffsetRpy.map(v => (Number.isFinite(Number(v)) ? Number(v) : 0))
-    : [0, 0, 0];
+    : [...DEFAULT_TOOL_OFFSET_RPY];
   const toolFrame = computeToolFrame(fk.total, safeOffsetRpy, toolType);
   const tcp = toolFrame.tcpPosition;
 

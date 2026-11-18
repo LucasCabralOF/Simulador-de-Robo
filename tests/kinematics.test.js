@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Matrix4 } from 'three';
-import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_JOINTS, TOOL_LIST, TOOL_TYPES, computeToolFrame, detectSelfCollision, dhMatrix, flangeRpyFromToolTarget, forwardKinematics, integrateJoints, inverseKinematics, inverseVelocity, jacobianDiagnostics, matrixRows, multiplyVector, normalizeJoints, orientation, rotationFromRPY, sweepJointsCollisionFree, validateJoints } from '../src/kinematics.js';
+import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_JOINTS, DEFAULT_MODEL_STYLE, LINK_SHAPES, TOOL_LIST, TOOL_TYPES, computeToolFrame, detectSelfCollision, dhMatrix, flangeRpyFromToolTarget, forwardKinematics, integrateJoints, inverseKinematics, inverseVelocity, isDefaultModelStyle, jacobianDiagnostics, matrixRows, multiplyVector, normalizeJoints, normalizeModelStyle, orientation, resolveJointModelStyle, rotationFromRPY, solveBoundedTarget, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from '../src/kinematics.js';
 import { PRESET_LIST } from '../src/presets.js';
 
 const near = (actual, expected, tolerance = 1e-8) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
@@ -224,6 +224,15 @@ test('tool catalog, TCP kinematics, and mounted orientation offset solve tool po
   // Local +X rotated by -90 deg pitch points along flange +Z
   nearVector(welderTcp.approach, [0, 0, 1], 1e-6);
 
+  // Default tool direction continues straight along flange +X_n (RPY [0, 0, 0])
+  const defaultTcp = computeToolFrame(fk.total);
+  const xFlange = [fk.total.elements[0], fk.total.elements[1], fk.total.elements[2]];
+  const zFlange = [fk.total.elements[8], fk.total.elements[9], fk.total.elements[10]];
+  const dotX = defaultTcp.approach[0] * xFlange[0] + defaultTcp.approach[1] * xFlange[1] + defaultTcp.approach[2] * xFlange[2];
+  const dotZ = defaultTcp.approach[0] * zFlange[0] + defaultTcp.approach[1] * zFlange[1] + defaultTcp.approach[2] * zFlange[2];
+  near(dotX, 1, 1e-6);
+  near(dotZ, 0, 1e-6);
+
   // Inverse solve compensated by flangeRpyFromToolTarget achieves desired tool orientation [0, -90, 0]
   const ur5 = PRESET_LIST.find(p => p.id === 'ur5').joints;
   const targetToolRpy = [0, -90, 0];
@@ -269,4 +278,128 @@ test('environment collision detects workbench floor and blocks sphere/box obstac
     environment: boxEnv,
   });
   assert.equal(blockedIk.converged, false);
+});
+
+test('staticJointEfforts computes tau = J^T * F with correct R/P units', () => {
+  const fk = forwardKinematics(DEFAULT_JOINTS);
+  const wrench = [0, -20, 0, 0, 0, 0];
+  const res = staticJointEfforts(DEFAULT_JOINTS, fk.jacobian, wrench);
+
+  assert.deepEqual(res.labels, ['T1', 'F2', 'T3']);
+  assert.deepEqual(res.units, ['N·u', 'N', 'N·u']);
+
+  const [x, , ] = fk.positions.at(-1);
+  // For DEFAULT_JOINTS planar in XY: tau_1 = J_11*Fx + J_21*Fy = 0 + x*(-20)
+  near(res.efforts[0], x * -20, 1e-8);
+  // J_22 = -cos(45 deg) for d2, so F2 = (-cos 45)*(-20) = 20*cos(45 deg)
+  near(res.efforts[1], 20 * Math.cos(45 * DEG), 1e-8);
+  // T3 = a3*cos(75 deg)*(-20)
+  near(res.efforts[2], 5 * Math.cos(75 * DEG) * -20, 1e-8);
+});
+
+test('solveBoundedTarget clamps gizmo drags strictly within joint, workspace, singularity, and obstacle limits', () => {
+  // 1. Out-of-reach diagonal pull on RPR clamps strictly to circular boundary r <= 15 and matches FK
+  const overDiag = solveBoundedTarget(DEFAULT_JOINTS, { position: [12, 12, 0], rpy: [0, 0, 75] }, { mode: 'xy' });
+  assert.equal(overDiag.blocked, false);
+  assert.equal(overDiag.converged, false);
+  const rDiag = Math.hypot(overDiag.position[0], overDiag.position[1]);
+  assert.ok(rDiag <= 15 + 1e-4 && rDiag > 14.9, `Expected boundary r ~ 15, got ${rDiag}`);
+  nearVector(overDiag.position, forwardKinematics(overDiag.joints).positions.at(-1), 1e-6);
+
+  // 2. PRP cylindrical bounds clamp strictly inside d1 in [0.5, 8] and d3 in [0.5, 8]
+  const prp = PRESET_LIST.find(p => p.id === 'prp');
+  const overPrp = solveBoundedTarget(prp.joints, { position: [12, 12, 14], rpy: [0, 0, 0] }, {
+    mode: 'position',
+    toolOffsetRpy: prp.toolOffsetRpy,
+  });
+  assert.equal(overPrp.blocked, false);
+  assert.ok(overPrp.position[2] <= 8 + 1e-6 && overPrp.position[2] >= 0.5 - 1e-6);
+  const rPrp = Math.hypot(overPrp.position[0], overPrp.position[1]);
+  assert.ok(rPrp <= 8 + 1e-4 && rPrp >= 0.5 - 1e-4);
+
+  // 3. SCARA stretched completely straight (theta2 = 0) escapes singularity when dragged straight inward
+  const scara = PRESET_LIST.find(p => p.id === 'scara');
+  const straightScara = scara.joints.map((j, idx) => (idx < 2 ? { ...j, val: 0 } : j));
+  const straightEnd = forwardKinematics(straightScara).positions.at(-1);
+  const inward = solveBoundedTarget(
+    straightScara,
+    { position: [straightEnd[0] - 1.5, straightEnd[1], straightEnd[2]], rpy: [0, 0, 0] },
+    { mode: 'position', toolOffsetRpy: scara.toolOffsetRpy }
+  );
+  assert.equal(inward.blocked, false);
+  assert.equal(inward.converged, true);
+  nearVector(inward.position, [straightEnd[0] - 1.5, straightEnd[1], straightEnd[2]], 1e-3);
+
+  // 4. Obstacle collision stops gizmo outside the obstacle surface
+  const boxEnv = {
+    floorEnabled: true,
+    floorZ: -0.22,
+    obstacle: { enabled: true, shape: 'box', position: [3.5, 2.5, 0], radius: 1.0 },
+  };
+  const blockedObs = solveBoundedTarget(DEFAULT_JOINTS, { position: [3.5, 2.5, 0], rpy: [0, 0, 75] }, {
+    mode: 'xy',
+    environment: boxEnv,
+  });
+  assert.equal(blockedObs.converged, false);
+  assert.equal(detectSelfCollision(blockedObs.joints, null, 'gripper', boxEnv).colliding, false);
+
+  // 5. Impossible out-of-plane Roll on planar RPR clamps Roll to 0
+  const rotRoll = solveBoundedTarget(DEFAULT_JOINTS, { position: forwardKinematics(DEFAULT_JOINTS).positions.at(-1), rpy: [45, 0, 75] }, {
+    mode: 'pose',
+    toolOffsetRpy: [0, 0, 0],
+  });
+  near(rotRoll.rpy[0], 0, 1e-4);
+  near(rotRoll.rpy[1], 0, 1e-4);
+});
+
+test('normalizeModelStyle clamps dimensions, validates link shapes, and tracks defaults', () => {
+  assert.deepEqual(Object.keys(LINK_SHAPES), ['cylinder', 'square', 'hex', 'flat']);
+  assert.equal(isDefaultModelStyle(DEFAULT_MODEL_STYLE), true);
+
+  const clamped = normalizeModelStyle({
+    linkShape: 'invalid',
+    linkRadius: 99,
+    revRadius: 0.001,
+    revLength: NaN,
+    prismWidth: 5,
+    prismLength: -1,
+  });
+  assert.equal(clamped.linkShape, 'cylinder');
+  assert.equal(clamped.linkRadius, 0.35);
+  assert.equal(clamped.revRadius, 0.08);
+  assert.equal(clamped.revLength, DEFAULT_MODEL_STYLE.revLength);
+  assert.equal(clamped.prismWidth, 1.0);
+  assert.equal(clamped.prismLength, 0.15);
+  assert.equal(isDefaultModelStyle(clamped), false);
+
+  const custom = normalizeModelStyle({ linkShape: 'hex', linkRadius: 0.12, revRadius: 0.45, revLength: 0.6, prismWidth: 0.5, prismLength: 0.8 });
+  assert.deepEqual(custom, {
+    linkShape: 'hex',
+    linkRadius: 0.12,
+    revRadius: 0.45,
+    revLength: 0.6,
+    prismWidth: 0.5,
+    prismLength: 0.8,
+  });
+
+  // Per-joint and per-link customization inherits global defaults for untouched fields
+  const withPerJoint = normalizeModelStyle({
+    ...custom,
+    perJoint: {
+      1: { linkShape: 'square', revRadius: 99 },
+      badKey: { linkRadius: 0.2 },
+    },
+  });
+  assert.deepEqual(withPerJoint.perJoint, { 1: { linkShape: 'square', revRadius: 0.8 } });
+  assert.equal(isDefaultModelStyle({ ...DEFAULT_MODEL_STYLE, perJoint: { 1: { revRadius: 0.5 } } }), false);
+
+  const resolvedJ1 = resolveJointModelStyle(withPerJoint, 1);
+  assert.equal(resolvedJ1.overridden, true);
+  assert.equal(resolvedJ1.linkShape, 'square');
+  assert.equal(resolvedJ1.revRadius, 0.8);
+  assert.equal(resolvedJ1.linkRadius, 0.12);
+
+  const resolvedJ2 = resolveJointModelStyle(withPerJoint, 2);
+  assert.equal(resolvedJ2.overridden, false);
+  assert.equal(resolvedJ2.linkShape, 'hex');
 });

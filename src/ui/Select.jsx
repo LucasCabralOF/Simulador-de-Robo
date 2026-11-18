@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 
@@ -22,8 +22,8 @@ export function Select({
   const selectedIndex = options.findIndex(opt => opt.value === value);
   const selectedOption = selectedIndex >= 0 ? options[selectedIndex] : null;
 
-  useLayoutEffect(() => {
-    if (!open || !triggerRef.current) return;
+  const updateMenuPosition = useCallback(() => {
+    if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
     const margin = 8;
     const desiredWidth = compact ? Math.max(rect.width, 84) : rect.width;
@@ -40,7 +40,12 @@ export function Select({
         ? { left, width, bottom: window.innerHeight - rect.top + 4, maxHeight }
         : { left, width, top: rect.bottom + 4, maxHeight }
     );
-  }, [open, compact, options.length]);
+  }, [compact, options.length]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updateMenuPosition();
+  }, [open, updateMenuPosition]);
 
   useEffect(() => {
     if (!open) return;
@@ -50,9 +55,9 @@ export function Select({
     };
     const handleScroll = (e) => {
       if (menuRef.current?.contains(e.target)) return;
-      setOpen(false);
+      updateMenuPosition();
     };
-    const handleResize = () => setOpen(false);
+    const handleResize = () => updateMenuPosition();
     document.addEventListener('pointerdown', handlePointerDown);
     window.addEventListener('scroll', handleScroll, true);
     window.addEventListener('resize', handleResize);
@@ -61,7 +66,7 @@ export function Select({
       window.removeEventListener('scroll', handleScroll, true);
       window.removeEventListener('resize', handleResize);
     };
-  }, [open]);
+  }, [open, updateMenuPosition]);
 
   useEffect(() => {
     if (!open || activeIndex < 0 || !menuRef.current) return;

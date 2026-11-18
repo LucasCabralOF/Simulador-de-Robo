@@ -2,13 +2,13 @@
  * Autonomous code generator for standalone C++, Python and ROS 2
  */
 
-import { TOOL_TYPES } from './kinematics.js';
+import { DEFAULT_TOOL_OFFSET_RPY, TOOL_TYPES } from './kinematics.js';
 
 function resolveTool(toolConfig = {}) {
   const spec = TOOL_TYPES[toolConfig?.toolType] || TOOL_TYPES.gripper;
   const offsetRpy = Array.isArray(toolConfig?.toolOffsetRpy) && toolConfig.toolOffsetRpy.length === 3
     ? toolConfig.toolOffsetRpy.map(v => (Number.isFinite(Number(v)) ? Number(v) : 0))
-    : [0, 0, 0];
+    : [...DEFAULT_TOOL_OFFSET_RPY];
   const toolGrip = Number.isFinite(Number(toolConfig?.toolGrip))
     ? Math.max(0, Math.min(100, Number(toolConfig.toolGrip)))
     : 50;

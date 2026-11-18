@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { normalizeJoints, TOOL_TYPES } from '../src/kinematics.js';
+import { normalizeJoints, normalizeModelStyle, TOOL_TYPES } from '../src/kinematics.js';
 
 function sanitizeToolConfig(raw) {
   if (!raw || typeof raw !== 'object') return null;
@@ -16,7 +16,11 @@ function sanitizeToolConfig(raw) {
   });
   const gripNum = Number(raw.toolGrip);
   const toolGrip = Number.isFinite(gripNum) ? Math.max(0, Math.min(100, gripNum)) : 50;
-  return { toolType, toolOffsetRpy, toolGrip };
+  const result = { toolType, toolOffsetRpy, toolGrip };
+  if (raw.modelStyle && typeof raw.modelStyle === 'object') {
+    result.modelStyle = normalizeModelStyle(raw.modelStyle);
+  }
+  return result;
 }
 
 export async function createApp(db) {

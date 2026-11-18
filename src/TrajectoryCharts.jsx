@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
+import { DEG } from './kinematics';
 import { SegmentedTabs } from './ui';
 
 const VIEWBOX_WIDTH = 420;
@@ -31,6 +32,7 @@ const METRIC_TABS = [
 const INTERP_NOTES = {
   quintic: 'Quíntico PTP: velocidade e aceleração nulas no início e fim de cada segmento.',
   cubic: 'Cúbico PTP: velocidade nula nos waypoints, com descontinuidade em q̈(t).',
+  trapezoidal: 'Trapezoidal (LSPB): aceleração constante (±a), velocidade de cruzeiro constante e desaceleração simétrica.',
   continuous: 'Spline Contínua (C²): passagem sem paradas intermediárias nos waypoints.',
   cartesian: 'Linear Cartesiano (LIN): velocidade articular ajustada para manter linha reta 3D.',
 };
@@ -44,13 +46,13 @@ function formatCompact(n) {
   return n.toFixed(2);
 }
 
-function formatUnitValue(val, type, metric) {
+function formatUnitValue(val, type, metric, angleUnit = 'deg') {
   if (!Number.isFinite(val)) return '-';
   const rounded = Math.abs(val) < 1e-4 ? 0 : val;
   if (metric === 'tcp') return `${rounded.toFixed(2)} u/s`;
-  const unit = type === 'R' ? '°' : 'u';
+  const unit = type === 'R' ? (angleUnit === 'rad' ? 'rad' : '°') : 'u';
   const suffix = metric === 'q' ? unit : metric === 'v' ? `${unit}/s` : `${unit}/s²`;
-  const digits = type === 'R' ? 1 : 2;
+  const digits = type === 'R' ? (angleUnit === 'rad' ? 3 : 1) : 2;
   return `${rounded.toFixed(digits)} ${suffix}`;
 }
 
@@ -87,6 +89,7 @@ export default function TrajectoryCharts({
   trajectoryData,
   playTime = 0,
   interpType = 'quintic',
+  angleUnit = 'deg',
   onSeek,
 }) {
   const [metric, setMetric] = useState('q');
@@ -102,9 +105,23 @@ export default function TrajectoryCharts({
 
   const hasData = Array.isArray(times) && times.length >= 2 && totalDuration > 0;
   const clampedTime = Math.max(0, Math.min(totalDuration, playTime));
+  const rScale = angleUnit === 'rad' ? DEG : 1;
+
+  const scaledProfiles = useMemo(() => {
+    if (!Array.isArray(jointProfiles)) return [];
+    if (rScale === 1) return jointProfiles;
+    return jointProfiles.map(jp => (jp.type === 'R'
+      ? {
+          ...jp,
+          q: jp.q.map(v => v * rScale),
+          v: jp.v.map(v => v * rScale),
+          a: jp.a.map(v => v * rScale),
+        }
+      : jp));
+  }, [jointProfiles, rScale]);
 
   const peaks = useMemo(() => {
-    if (!hasData || !Array.isArray(jointProfiles)) {
+    if (!hasData || !Array.isArray(scaledProfiles)) {
       return { maxVelR: 0, maxVelP: 0, maxAccR: 0, maxAccP: 0, maxTcp: 0, hasR: false, hasP: false };
     }
     let maxVelR = 0;
@@ -114,7 +131,7 @@ export default function TrajectoryCharts({
     let hasR = false;
     let hasP = false;
 
-    for (const jp of jointProfiles) {
+    for (const jp of scaledProfiles) {
       if (jp.type === 'R') {
         hasR = true;
         for (const v of jp.v) maxVelR = Math.max(maxVelR, Math.abs(v));
@@ -132,7 +149,7 @@ export default function TrajectoryCharts({
     }
 
     return { maxVelR, maxVelP, maxAccR, maxAccP, maxTcp, hasR, hasP };
-  }, [hasData, jointProfiles, tcpSpeeds]);
+  }, [hasData, scaledProfiles, tcpSpeeds]);
 
   const activeSeries = useMemo(() => {
     if (!hasData) return [];
@@ -145,7 +162,7 @@ export default function TrajectoryCharts({
         values: tcpSpeeds || [],
       }];
     }
-    return (jointProfiles || [])
+    return scaledProfiles
       .filter(jp => !hiddenJoints.includes(jp.index))
       .map(jp => ({
         key: `j-${jp.index}`,
@@ -154,7 +171,7 @@ export default function TrajectoryCharts({
         color: JOINT_COLORS[jp.index % JOINT_COLORS.length],
         values: jp[metric] || [],
       }));
-  }, [hasData, metric, tcpSpeeds, jointProfiles, hiddenJoints]);
+  }, [hasData, metric, tcpSpeeds, scaledProfiles, hiddenJoints]);
 
   const { yMin, yMax, yTicks } = useMemo(() => {
     let lo = Infinity;
@@ -381,7 +398,7 @@ export default function TrajectoryCharts({
         </div>
       ) : (
         <div className="chart-legend" aria-label="Legenda e filtro das juntas">
-          {(jointProfiles || []).map(jp => {
+          {scaledProfiles.map(jp => {
             const color = JOINT_COLORS[jp.index % JOINT_COLORS.length];
             const hidden = hiddenJoints.includes(jp.index);
             const currentVal = interpolateSeriesAtTime(times, jp[metric], clampedTime);
@@ -396,7 +413,7 @@ export default function TrajectoryCharts({
               >
                 <span className="chart-swatch" style={{ backgroundColor: color }} />
                 <strong>{jp.label} ({jp.type})</strong>
-                <code>{formatUnitValue(currentVal, jp.type, metric)}</code>
+                <code>{formatUnitValue(currentVal, jp.type, metric, angleUnit)}</code>
               </button>
             );
           })}
@@ -407,7 +424,7 @@ export default function TrajectoryCharts({
         {peaks.hasR && (
           <div>
             <dt>Pico |q̇| (R)</dt>
-            <dd>{peaks.maxVelR.toFixed(1)} °/s</dd>
+            <dd>{angleUnit === 'rad' ? `${peaks.maxVelR.toFixed(3)} rad/s` : `${peaks.maxVelR.toFixed(1)} °/s`}</dd>
           </div>
         )}
         {peaks.hasP && (
@@ -419,7 +436,7 @@ export default function TrajectoryCharts({
         {peaks.hasR && (
           <div>
             <dt>Pico |q̈| (R)</dt>
-            <dd>{peaks.maxAccR.toFixed(1)} °/s²</dd>
+            <dd>{angleUnit === 'rad' ? `${peaks.maxAccR.toFixed(3)} rad/s²` : `${peaks.maxAccR.toFixed(1)} °/s²`}</dd>
           </div>
         )}
         {peaks.hasP && (

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { Box3, PerspectiveCamera, Vector3 } from 'three';
 import { forwardKinematics } from '../../src/kinematics.js';
+import { PRESETS } from '../../src/presets.js';
 
 async function number(page, label, value) {
   const input = page.getByRole('spinbutton', { name: label, exact: true });
@@ -36,8 +37,12 @@ test('numerical workflows, persistence, responsive layout and interactive WebGL'
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
-  await expect(page.getByTestId('end-position')).toContainText('X 4.83 · Y 1.29 · Z 0.00');
+  await expect(page.locator('.scene-brand')).toBeVisible();
+  // Default state boots into 100% 3D Cobot UR5 canvas with floating panels collapsed
+  await expect(page.locator('.scene-popover')).toHaveCount(0);
+  await expect(page.locator('.scene-brand')).toContainText('Manipulador RRRRRR · 6 juntas');
+  const [ur5X, ur5Y, ur5Z] = forwardKinematics(PRESETS.ur5.joints).positions.at(-1).map(v => v.toFixed(2));
+  await expect(page.getByTestId('end-position')).toContainText(`X ${ur5X} · Y ${ur5Y} · Z ${ur5Z}`);
   await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
   await expect.poll(async () => (await pixels(page)).pink).toBeGreaterThan(10);
   const before = await pixels(page);
@@ -45,10 +50,6 @@ test('numerical workflows, persistence, responsive layout and interactive WebGL'
   expect(before.gold).toBeGreaterThan(5);
   await page.screenshot({ path: info.outputPath('model.png'), fullPage: true });
 
-  await number(page, 'q1 (°)', 65);
-  await expect(page.getByTestId('end-position')).not.toContainText('X 4.83');
-  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(before.checksum);
-  await page.getByRole('button', { name: 'Restaurar RPR das aulas' }).click();
   const canvas = page.locator('canvas');
   await canvas.scrollIntoViewIfNeeded();
   const bounds = await canvas.boundingBox();
@@ -60,20 +61,38 @@ test('numerical workflows, persistence, responsive layout and interactive WebGL'
   await expect.poll(async () => (await pixels(page)).checksum).not.toBe(orbitBefore.checksum);
   await page.getByRole('button', { name: 'Enquadrar manipulador' }).click();
 
+  // Open Modelo floating popover from slim top bar
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  await expect(page.locator('.scene-popover')).toBeVisible();
+  await number(page, 'q1 (°)', 35);
+  await expect(page.getByTestId('end-position')).not.toContainText(`X ${ur5X} · Y ${ur5Y}`);
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(before.checksum);
+  await page.getByRole('button', { name: 'Restaurar Cobot UR5 padrão' }).click();
+  await expect(page.getByTestId('end-position')).toContainText(`X ${ur5X} · Y ${ur5Y} · Z ${ur5Z}`);
+
   await number(page, 'Mín. 1 (°)', 200);
   await expect(page.locator('.notice[role="status"]')).toContainText('mínimo deve ser menor');
   await expect(page.getByRole('spinbutton', { name: 'Mín. 1 (°)', exact: true })).toHaveValue('-180');
 
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   const simName = `browser-${info.project.name}`;
   await page.getByRole('textbox', { name: 'Nome da simulação' }).fill(simName);
   await page.getByRole('button', { name: 'Salvar', exact: true }).click();
   await expect(page.getByRole('button', { name: `Carregar ${simName}`, exact: true })).toBeVisible();
-  await number(page, 'q1 (°)', 10);
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  await number(page, 'q1 (°)', 15);
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   await page.getByRole('button', { name: `Carregar ${simName}`, exact: true }).click();
-  await expect(page.getByRole('spinbutton', { name: 'q1 (°)', exact: true })).toHaveValue('45');
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'q1 (°)', exact: true })).toHaveValue('0');
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: `Apagar ${simName}`, exact: true }).click();
   await expect(page.getByRole('button', { name: `Carregar ${simName}`, exact: true })).toHaveCount(0);
+
+  // Switch to Didático RPR (3-DOF) for analytical planar checks across Direta, Diferencial, and Inversa
+  await pickOption(page, 'Selecionar preset industrial', 'Didático RPR (3-DOF) (3 DOF)');
+  await expect(page.getByTestId('end-position')).toContainText('X 4.83 · Y 1.29 · Z 0.00');
 
   await page.getByRole('button', { name: 'Direta', exact: true }).click();
   await expect(page.getByRole('table', { name: 'T⁰ₙ = A₁ · … · Aₙ', exact: true })).toBeVisible();
@@ -95,6 +114,10 @@ test('numerical workflows, persistence, responsive layout and interactive WebGL'
   await number(page, 'vx (u/s)', 0.2);
   await page.getByRole('button', { name: 'Usar velocidades', exact: true }).click();
   await expect(page.locator('.notice[role="status"]')).toContainText('Velocidades articulares atualizadas');
+  await expect(page.getByRole('heading', { name: 'Estática (τ = Jᵀ F)' })).toBeVisible();
+  await page.getByRole('button', { name: 'Aplicar −m·g em Y', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Fy (N)', exact: true })).toHaveValue('-20');
+  await expect(page.getByRole('table', { name: 'Esforços nas juntas · R: Torque T (N·u); P: Força F (N)', exact: true })).toContainText('T1 (N·u)');
   await page.screenshot({ path: info.outputPath('differential.png'), fullPage: true });
 
   await page.getByRole('button', { name: 'Inversa', exact: true }).click();
@@ -142,6 +165,7 @@ test('numerical workflows, persistence, responsive layout and interactive WebGL'
 
 test('API failures are visible and do not announce successful persistence', async ({ page }) => {
   await page.goto('/');
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   await page.route('**/api/simulations', async route => {
     if (route.request().method() === 'POST') await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Banco indisponível' }) });
     else await route.continue();
@@ -198,7 +222,9 @@ test('revolute motors remain anchored to their frame origins while DH pose and d
   const { id } = await response.json();
   try {
     await page.goto('/');
+    await page.getByRole('button', { name: 'Projetos', exact: true }).click();
     await page.getByRole('button', { name: `Carregar ${name}`, exact: true }).click();
+    await page.getByRole('button', { name: 'Modelo', exact: true }).click();
     await expect(page.getByRole('spinbutton', { name: 'd2', exact: true })).toHaveValue('2');
     await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
     await page.getByRole('checkbox', { name: 'Referenciais', exact: true }).uncheck();
@@ -220,24 +246,36 @@ test('revolute motors remain anchored to their frame origins while DH pose and d
 
 test('preset selection, 3D workspace calculation, and code export work seamlessly', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
+  await expect(page.locator('.scene-brand')).toBeVisible();
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+
+  // Test loading PRP Espacial preset (P2 Question 3)
+  await pickOption(page, 'Selecionar preset industrial', 'PRP Espacial (P2 / 3-DOF) (3 DOF)');
+  await expect(page.locator('.notice[role="status"]')).toContainText('Robô PRP Espacial (P2 / 3-DOF) carregado.');
+  await expect(page.locator('.scene-brand')).toContainText('Manipulador PRP · 3 juntas');
+  await expect(page.getByTestId('end-position')).toContainText('X 3.46 · Y 2.00 · Z 2.50 u');
 
   // Test loading SCARA preset
   await pickOption(page, 'Selecionar preset industrial', 'SCARA (RRPR) (4 DOF)');
   await expect(page.locator('.notice[role="status"]')).toContainText('Robô SCARA (RRPR) carregado.');
-  await expect(page.locator('.sidebar')).toContainText('4 juntas');
+  await expect(page.locator('.scene-brand')).toContainText('4 juntas');
 
-  // Test 3D Workspace tab and calculation
+  // Test 3D Workspace tab and calculation (compact popover)
   await page.getByRole('button', { name: 'Alcance 3D' }).click();
   await expect(page.getByRole('heading', { name: 'Espaço de Trabalho 3D (Monte Carlo)' })).toBeVisible();
+  const workspaceBox = await page.locator('.scene-popover').boundingBox();
   await page.getByRole('button', { name: 'Calcular alcance' }).click();
   await expect(page.getByRole('heading', { name: 'Estatísticas do Envelope' })).toBeVisible();
   await expect(page.locator('.readings')).toContainText('Volume envolvente');
   await expect(page.getByRole('checkbox', { name: 'Nuvem 3D' })).toBeVisible();
 
-  // Test Code Export tab
+  // Test Code Export tab (wider popover on desktop)
   await page.getByRole('button', { name: 'Código' }).click();
   await expect(page.getByRole('heading', { name: 'Exportação de Código de Controle' })).toBeVisible();
+  const exportBox = await page.locator('.scene-popover').boundingBox();
+  if ((await page.evaluate(() => window.innerWidth)) > 800) {
+    expect(exportBox.width).toBeGreaterThan(workspaceBox.width);
+  }
   await expect(page.locator('.code-block')).toContainText('forwardKinematics');
   await page.getByRole('button', { name: 'Python / NumPy' }).click();
   await expect(page.locator('.code-block')).toContainText('def forward_kinematics');
@@ -247,7 +285,7 @@ test('preset selection, 3D workspace calculation, and code export work seamlessl
 
 test('trajectory sequencer, playback timeline, and 3D path trail operate correctly', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
+  await expect(page.locator('.scene-brand')).toBeVisible();
 
   // Open Trajectory tab
   await page.getByRole('button', { name: 'Trajetória' }).click();
@@ -255,7 +293,7 @@ test('trajectory sequencer, playback timeline, and 3D path trail operate correct
 
   // Verify default waypoints exist
   await expect(page.locator('.waypoint-item')).toHaveCount(3);
-  await expect(page.locator('.sidebar').getByRole('checkbox', { name: 'Trilha 3D' })).toBeChecked();
+  await expect(page.locator('.scene-popover').getByRole('checkbox', { name: 'Trilha 3D' })).toBeChecked();
 
   // Test adding a new waypoint
   await page.getByRole('button', { name: 'Adicionar pose atual' }).click();
@@ -303,11 +341,23 @@ test('trajectory sequencer, playback timeline, and 3D path trail operate correct
   expect(box).not.toBeNull();
   await page.mouse.click(box.x + box.width * 0.55, box.y + box.height * 0.5);
   await expect(page.locator('.timeline-slider-row span').first()).not.toHaveText('0.00 s');
+
+  // Switch trajectory interpolation mode to Trapezoidal (LSPB)
+  await pickOption(page, 'Tipo de interpolação', 'Trapezoidal — LSPB (aceleração e cruzeiro constantes)');
+  await expect(page.locator('.chart-interp-note')).toContainText('Trapezoidal (LSPB)');
+
+  // Toggle angular unit between degrees and radians
+  await page.getByRole('button', { name: 'Radianos (rad)', exact: true }).click();
+  await expect(page.locator('.chart-stats')).toContainText('rad/s');
+  await expect(page.locator('.chart-stats')).toContainText('rad/s²');
+  await page.getByRole('button', { name: 'Graus (°)', exact: true }).click();
+  await expect(page.locator('.chart-stats')).toContainText('°/s');
 });
 
 test('public link sharing and academic report generation operate properly', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
+  await expect(page.locator('.scene-brand')).toBeVisible();
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
 
   // Test public link sharing
   await page.getByRole('button', { name: 'Compartilhar link público' }).click();
@@ -325,7 +375,7 @@ test('public link sharing and academic report generation operate properly', asyn
 
 test('URDF export/import workflows and STL CAD tool attachments work properly', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
+  await expect(page.locator('.scene-brand')).toBeVisible();
 
   // Test URDF code export tab
   await page.getByRole('button', { name: 'Código' }).click();
@@ -334,7 +384,7 @@ test('URDF export/import workflows and STL CAD tool attachments work properly', 
   await expect(page.getByRole('button', { name: 'Baixar .urdf' })).toBeVisible();
 
   // Test URDF file upload into simulator
-  await page.getByRole('button', { name: 'Modelo' }).click();
+  await page.getByRole('button', { name: 'Projetos' }).click();
   const urdfXml = `<?xml version="1.0"?>
 <robot name="test_arm">
   <link name="base_link"/>
@@ -352,7 +402,7 @@ test('URDF export/import workflows and STL CAD tool attachments work properly', 
   });
 
   await expect(page.locator('.notice[role="status"]')).toContainText('Robô importado via URDF');
-  await expect(page.locator('.sidebar')).toContainText('1 juntas');
+  await expect(page.locator('.scene-brand')).toContainText('1 juntas');
 
   // Verify STL CAD upload button exists in scene toolbar
   await expect(page.locator('label[aria-label="Carregar malha STL"]')).toBeVisible();
@@ -360,7 +410,10 @@ test('URDF export/import workflows and STL CAD tool attachments work properly', 
 
 test('joint control interval limits auto-clamp positions, update IK slider bounds, and constrain solver', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
+  await expect(page.locator('.scene-brand')).toBeVisible();
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  await pickOption(page, 'Selecionar preset industrial', 'Didático RPR (3-DOF) (3 DOF)');
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
 
   // Model tab: tightening max below current q2 (5 u) clamps q2 automatically to 3
   await number(page, 'Máx. 2 (u)', 3);
@@ -408,7 +461,10 @@ test('joint control interval limits auto-clamp positions, update IK slider bound
 
 test('self-collision prevention blocks tunneling across links and notifies user', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Cinemática DH' })).toBeVisible();
+  await expect(page.locator('.scene-brand')).toBeVisible();
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  await pickOption(page, 'Selecionar preset industrial', 'Didático RPR (3-DOF) (3 DOF)');
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
 
   // Attempt to jump q3 from 30 deg across 90 deg (link fold) to 120 deg
   await number(page, 'q3 (°)', 120);
@@ -426,6 +482,7 @@ test('self-collision prevention blocks tunneling across links and notifies user'
 
 test('sliding UR5 target sliders to extremes keeps transverse fixed coordinates locked', async ({ page }) => {
   await page.goto('/');
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   await pickOption(page, 'Selecionar preset industrial', 'Universal Cobot UR5 (6R) (6 DOF)');
   await page.getByRole('button', { name: 'Inversa', exact: true }).click();
 
@@ -460,15 +517,19 @@ test('sliding UR5 target sliders to extremes keeps transverse fixed coordinates 
 
 test('customizable industrial tool selector and always-available tool orientation work end-to-end', async ({ page }) => {
   await page.goto('/');
+  await page.getByRole('button', { name: /Ferramenta/i }).click();
   await expect(page.getByRole('heading', { name: 'Ferramenta do efetuador (TCP)' })).toBeVisible();
 
-  // Switch between the 3 industrial tool types on Model tab
+  // Switch between the 3 industrial tool types via top toolbar popover (works across tabs)
   await page.getByRole('button', { name: 'Ventosa a Vácuo', exact: true }).click();
   await expect(page.locator('.scene-readout')).toContainText('Ventosa a Vácuo');
   await page.getByRole('button', { name: 'Tocha de Solda', exact: true }).click();
   await expect(page.locator('.scene-readout')).toContainText('Tocha de Solda');
 
-  // Switch to UR5 6-DOF robot and Inverse tab
+  // Switch to UR5 6-DOF robot and Inverse tab while confirming popover can close cleanly
+  await page.getByRole('button', { name: 'Fechar painel', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Ferramenta do efetuador (TCP)' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   await pickOption(page, 'Selecionar preset industrial', 'Universal Cobot UR5 (6R) (6 DOF)');
   await page.getByRole('button', { name: 'Inversa', exact: true }).click();
 
@@ -509,16 +570,32 @@ test('interactive 3D target gizmo toggles translate and rotate modes cleanly wit
   await expect(page.getByRole('button', { name: 'Girar no 3D (RPY)', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('combobox', { name: 'Tarefa', exact: true })).toContainText('Pose XYZ + orientação');
 
+  // Collapsing Inversa drawer preserves active IK context & 3D Gizmo on canvas
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.scene-popover')).toHaveCount(0);
+  await expect(toolbarGizmoToggle).toBeChecked();
+
   expect(errors).toEqual([]);
 });
 
 test('environment collision detects elevated workbench floor and blocks motion through 3D obstacles', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', err => errors.push(err.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
   await page.goto('/');
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  await pickOption(page, 'Selecionar preset industrial', 'Didático RPR (3-DOF) (3 DOF)');
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Ambiente e Colisão Externa (Piso / Obstáculo 3D)' })).toBeVisible();
 
   // Position a 1.0u sphere obstacle ahead along the RPR sweep path at [4, 3, 0]
   await page.getByRole('button', { name: 'Posicionar à frente do efetuador', exact: true }).click();
   await expect(page.locator('.scene-toolbar').getByRole('checkbox', { name: 'Obstáculo 3D', exact: true })).toBeChecked();
+  const obsGizmoToggle = page.getByRole('checkbox', { name: 'Mover obstáculo no 3D (Gizmo)', exact: true });
+  await expect(obsGizmoToggle).toBeChecked();
+  await obsGizmoToggle.uncheck();
+  await obsGizmoToggle.check();
   await number(page, 'Obstáculo X (u)', 4);
   await number(page, 'Obstáculo Y (u)', 3);
   await number(page, 'Obstáculo Z (u)', 0);
@@ -543,13 +620,17 @@ test('environment collision detects elevated workbench floor and blocks motion t
   await expect(page.locator('.collision-readout-pill')).toContainText('piso/bancada');
   await page.getByRole('button', { name: 'Restaurar ambiente padrão', exact: true }).click();
   await expect(page.locator('.collision-readout-pill')).toHaveCount(0);
+
+  expect(errors).toEqual([]);
 });
 
 test('tool configuration (TCP) synchronizes across exported code, URDF, report summary, and SQLite save/load', async ({ page }, info) => {
   await page.goto('/');
+  await page.getByRole('button', { name: /Ferramenta/i }).click();
   await page.getByRole('button', { name: 'Tocha de Solda', exact: true }).click();
   await number(page, 'Offset Pitch (°)', -45);
 
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   const simName = `tcp-sync-${info.project.name}`;
   await page.getByRole('textbox', { name: 'Nome da simulação' }).fill(simName);
   await page.getByRole('button', { name: 'Salvar', exact: true }).click();
@@ -568,14 +649,160 @@ test('tool configuration (TCP) synchronizes across exported code, URDF, report s
   await expect(page.locator('.readings')).toContainText('Tocha de Solda');
   await expect(page.locator('.readings')).toContainText('Posição do TCP (u)');
 
-  // Reloading saved simulation restores the tool even after switching back to default gripper
-  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  // Reset in Ferramenta popover, reload in Projetos popover, and verify restoration
+  await page.getByRole('button', { name: /Ferramenta/i }).click();
   await page.getByRole('button', { name: 'Restaurar ferramenta padrão', exact: true }).click();
   await expect(page.locator('.scene-readout')).toContainText('Garra Paralela');
+
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   await page.getByRole('button', { name: `Carregar ${simName}`, exact: true }).click();
   await expect(page.locator('.scene-readout')).toContainText('Tocha de Solda');
+
+  await page.getByRole('button', { name: /Ferramenta/i }).click();
   await expect(page.getByRole('spinbutton', { name: 'Offset Pitch (°)', exact: true })).toHaveValue('-45');
 
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: `Apagar ${simName}`, exact: true }).click();
+});
+
+test('custom 3D robot modeling (per-link, per-axis, and global sizes) updates WebGL scene, URDF, and SQLite persistence', async ({ page }, info) => {
+  await page.goto('/');
+  await expect(page.locator('.scene-brand')).toContainText('Manipulador RRRRRR · 6 juntas');
+  await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+  await expect.poll(async () => (await pixels(page)).pink).toBeGreaterThan(10);
+  const beforeRender = await pixels(page);
+
+  // Open floating 3D modeling popover from slim top toolbar and verify bounds + no horizontal overflow
+  await page.getByRole('button', { name: /Modelagem 3D/i }).click();
+  const popover = page.locator('.scene-popover');
+  await expect(popover).toBeVisible();
+  const boundsCheck = await page.evaluate(() => {
+    const canvas = document.querySelector('.canvas-container')?.getBoundingClientRect();
+    const pop = document.querySelector('.scene-popover')?.getBoundingClientRect();
+    return {
+      noDocOverflow: document.documentElement.scrollWidth <= window.innerWidth,
+      fitsCanvas: Boolean(canvas && pop && pop.left >= canvas.left - 1 && pop.right <= canvas.right + 1 && pop.bottom <= canvas.bottom + 1),
+    };
+  });
+  expect(boundsCheck.noDocOverflow).toBe(true);
+  expect(boundsCheck.fitsCanvas).toBe(true);
+
+  // Test floating window controls: drag header, resize corner, dock-left, and fullscreen
+  const wsBox = await page.locator('.scene-workspace-row').boundingBox();
+  const initialPopBox = await popover.boundingBox();
+  expect(wsBox).not.toBeNull();
+  expect(initialPopBox).not.toBeNull();
+  if (wsBox.width > initialPopBox.width + 90) {
+    const headerBox = await popover.locator('.scene-popover-header').boundingBox();
+    await page.mouse.move(headerBox.x + 24, headerBox.y + headerBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(headerBox.x + 104, headerBox.y + headerBox.height / 2 + 24, { steps: 5 });
+    await page.mouse.up();
+    const movedBox = await popover.boundingBox();
+    expect(movedBox.x).toBeGreaterThan(initialPopBox.x + 40);
+    expect(movedBox.y).toBeGreaterThan(initialPopBox.y + 10);
+
+    const resizeHandle = page.getByTestId('popover-resize-se');
+    const resizeBox = await resizeHandle.boundingBox();
+    await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(resizeBox.x + 64, resizeBox.y + 44, { steps: 5 });
+    await page.mouse.up();
+    const resizedBox = await popover.boundingBox();
+    expect(resizedBox.width).toBeGreaterThan(movedBox.width + 30);
+    expect(resizedBox.height).toBeGreaterThan(movedBox.height + 20);
+  }
+
+  await page.getByRole('button', { name: 'Fixar painel na lateral', exact: true }).click();
+  await expect(popover).toHaveClass(/scene-popover--dock-left/);
+  await page.getByRole('button', { name: 'Tela cheia do painel', exact: true }).click();
+  await expect(popover).toHaveClass(/scene-popover--fullscreen/);
+  const fullCheck = await page.evaluate(() => {
+    const ws = document.querySelector('.scene-workspace-row')?.getBoundingClientRect();
+    const pop = document.querySelector('.scene-popover')?.getBoundingClientRect();
+    return {
+      noDocOverflow: document.documentElement.scrollWidth <= window.innerWidth,
+      fillsWidth: Boolean(ws && pop && Math.abs(pop.width - ws.width) < 4),
+      fillsHeight: Boolean(ws && pop && Math.abs(pop.height - ws.height) < 4),
+    };
+  });
+  expect(fullCheck.noDocOverflow).toBe(true);
+  expect(fullCheck.fillsWidth).toBe(true);
+  expect(fullCheck.fillsHeight).toBe(true);
+  await pickOption(page, 'Alvo da personalização 3D', 'Padrão global (todos os elos e eixos)');
+  await page.getByRole('button', { name: 'Tela cheia do painel', exact: true }).click();
+  await expect(popover).toHaveClass(/scene-popover--floating/);
+
+  // Customize Axis/Link 1 separately on default Cobot UR5 (Revolute joint only)
+  await pickOption(page, 'Alvo da personalização 3D', 'Eixo / Ligação 1 (R)');
+  await expect(page.getByRole('spinbutton', { name: 'Largura da junta prismática P (u)', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Quadrada', exact: true }).click();
+  await number(page, 'Raio das hastes (u)', 0.22);
+  await number(page, 'Raio da junta rotativa R (u)', 0.58);
+  await number(page, 'Altura da junta rotativa R (u)', 0.72);
+
+  // Customize Axis/Link 3 separately without affecting Axis 1 or global defaults
+  await pickOption(page, 'Alvo da personalização 3D', 'Eixo / Ligação 3 (R)');
+  await page.getByRole('button', { name: 'Hexagonal', exact: true }).click();
+  await number(page, 'Raio das hastes (u)', 0.16);
+
+  await expect.poll(async () => (await pixels(page)).pink).toBeGreaterThan(beforeRender.pink);
+  await expect.poll(async () => (await pixels(page)).green).toBeGreaterThan(beforeRender.green);
+
+  // Switch to Direta wide popover and close cleanly with Escape
+  await page.getByRole('button', { name: 'Direta', exact: true }).click();
+  await expect(popover).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(popover).toHaveCount(0);
+
+  // Verify URDF exports custom per-joint <joint_style> tags and box link geometry
+  await page.getByRole('button', { name: 'Código', exact: true }).click();
+  await page.getByRole('button', { name: 'URDF (ROS)', exact: true }).click();
+  await expect(page.locator('.code-block')).toContainText('<joint_style id="1" link_shape="square" link_radius="0.22" rev_radius="0.58" rev_length="0.72"/>');
+  await expect(page.locator('.code-block')).toContainText('<joint_style id="3" link_shape="hex" link_radius="0.16"/>');
+  await expect(page.locator('.code-block')).toContainText('<box size="0.44 0.44');
+
+  // Verify SQLite save + reset + reload restores perJoint overrides via Projetos guide
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  const simName = `styled-cobot-${info.project.name}`;
+  await page.getByRole('textbox', { name: 'Nome da simulação' }).fill(simName);
+  await page.getByRole('button', { name: 'Salvar', exact: true }).click();
+  await expect(page.getByRole('button', { name: `Carregar ${simName}`, exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: /Modelagem 3D/i }).click();
+  await page.getByRole('button', { name: 'Restaurar modelagem padrão', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Raio das hastes (u)', exact: true })).toHaveValue('0.065');
+
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  await page.getByRole('button', { name: `Carregar ${simName}`, exact: true }).click();
+  await page.getByRole('button', { name: /Modelagem 3D/i }).click();
+  await pickOption(page, 'Alvo da personalização 3D', 'Eixo / Ligação 1 (R) · Personalizado');
+  await expect(page.getByRole('spinbutton', { name: 'Raio das hastes (u)', exact: true })).toHaveValue('0.22');
+  await expect(page.getByRole('spinbutton', { name: 'Raio da junta rotativa R (u)', exact: true })).toHaveValue('0.58');
+
+  // Clearing single-axis override falls back to global default without resetting Axis 3
+  await page.getByRole('button', { name: 'Usar padrão global neste eixo', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Raio das hastes (u)', exact: true })).toHaveValue('0.065');
+
+  // Verify prismatic axis customization on RPR displays only link + P-joint controls
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  await pickOption(page, 'Selecionar preset industrial', 'Didático RPR (3-DOF) (3 DOF)');
+  await page.getByRole('button', { name: /Modelagem 3D/i }).click();
+  await pickOption(page, 'Alvo da personalização 3D', 'Eixo / Ligação 2 (P)');
+  await expect(page.getByRole('spinbutton', { name: 'Raio da junta rotativa R (u)', exact: true })).toHaveCount(0);
+  await number(page, 'Largura da junta prismática P (u)', 0.64);
+  await expect(page.getByRole('spinbutton', { name: 'Largura da junta prismática P (u)', exact: true })).toHaveValue('0.64');
+
+  // Switch back to Modelo and verify collapsible advanced controls keep core Atuadores visible
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  await page.getByRole('button', { name: 'Recolher avançados', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Nível do piso Z (u)', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('spinbutton', { name: 'q1 (°)', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Expandir avançados', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Nível do piso Z (u)', exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: `Apagar ${simName}`, exact: true }).click();
 });

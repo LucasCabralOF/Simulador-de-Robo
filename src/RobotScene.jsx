@@ -1,8 +1,41 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Cylinder, Box, Sphere, Grid, TransformControls } from '@react-three/drei';
-import { AxesHelper, Box3, BufferAttribute, CanvasTexture, Euler, MathUtils, Vector3 } from 'three';
-import { DEG, dhMatrix, forwardKinematics, rotationFromRPY } from './kinematics';
+import { OrbitControls, Box, Sphere, Grid, TransformControls, Cylinder } from '@react-three/drei';
+import { AxesHelper, Box3, BoxGeometry, BufferAttribute, CanvasTexture, CylinderGeometry, Euler, MathUtils, MeshStandardMaterial, SphereGeometry, TorusGeometry, Vector3 } from 'three';
+import { DEFAULT_TOOL_OFFSET_RPY, DEG, dhMatrix, forwardKinematics, resolveJointModelStyle, rotationFromRPY } from './kinematics';
+
+// Shared GPU geometries & materials to prevent buffer/shader churn during 60 FPS animations
+const REV_MOTOR_GEOM = new CylinderGeometry(1, 1, 1, 24);
+const PRISM_BOX_GEOM = new BoxGeometry(1, 1, 1);
+const UNIT_LINK_CYL_GEOM = new CylinderGeometry(1, 1, 1, 20);
+const UNIT_LINK_SQUARE_GEOM = new BoxGeometry(2, 1, 2);
+const UNIT_LINK_HEX_GEOM = new CylinderGeometry(1, 1, 1, 6);
+const UNIT_LINK_FLAT_GEOM = new BoxGeometry(2.4, 1, 1.1);
+const LINK_SHAPE_GEOMS = {
+  cylinder: UNIT_LINK_CYL_GEOM,
+  square: UNIT_LINK_SQUARE_GEOM,
+  hex: UNIT_LINK_HEX_GEOM,
+  flat: UNIT_LINK_FLAT_GEOM,
+};
+const PEDESTAL_GEOM = new CylinderGeometry(0.5, 0.6, 0.2, 24);
+const WAYPOINT_SPHERE_GEOM = new SphereGeometry(0.09, 12, 12);
+const WAYPOINT_HALO_GEOM = new TorusGeometry(0.16, 0.016, 10, 24);
+const GRIPPER_HUB_GEOM = new SphereGeometry(0.12, 16, 16);
+const GRIPPER_PALM_GEOM = new BoxGeometry(0.08, 0.34, 0.1);
+const GRIPPER_FINGER_GEOM = new BoxGeometry(0.22, 0.06, 0.08);
+const GRIPPER_TIP_GEOM = new BoxGeometry(0.1, 0.05, 0.08);
+const APPROACH_SHAFT_GEOM = new CylinderGeometry(0.012, 0.012, 0.28, 10);
+const APPROACH_TIP_GEOM = new CylinderGeometry(0, 0.038, 0.09, 12);
+
+const REV_MOTOR_MAT = new MeshStandardMaterial({ color: '#e65c93', metalness: 0.3, roughness: 0.45 });
+const PRISM_BOX_MAT = new MeshStandardMaterial({ color: '#42b1e1', metalness: 0.3, roughness: 0.45 });
+const LINK_SHAFT_MAT = new MeshStandardMaterial({ color: '#70d9b0' });
+const TOOL_GOLD_MAT = new MeshStandardMaterial({ color: '#ffd36b', metalness: 0.5, roughness: 0.3, emissive: '#473310' });
+const PEDESTAL_MAT = new MeshStandardMaterial({ color: '#adb9bf', metalness: 0.5, roughness: 0.4 });
+const WAYPOINT_SPHERE_MAT = new MeshStandardMaterial({ color: '#ff9f43', emissive: '#d9534f', emissiveIntensity: 0.5 });
+const WAYPOINT_HALO_MAT = new MeshStandardMaterial({ color: '#ffb86c', emissive: '#ff9f43', emissiveIntensity: 0.6, transparent: true, opacity: 0.85 });
+const APPROACH_SHAFT_MAT = new MeshStandardMaterial({ color: '#62d5b5', emissive: '#279d84', emissiveIntensity: 0.6, transparent: true, opacity: 0.8 });
+const APPROACH_TIP_MAT = new MeshStandardMaterial({ color: '#62d5b5', emissive: '#279d84', emissiveIntensity: 0.75 });
 
 function AxisLabel({ text, position, color }) {
   const texture = useMemo(() => {
@@ -45,24 +78,12 @@ function Gripper({ openFrac = 0.5 }) {
   const offset = 0.07 + 0.12 * Math.max(0, Math.min(1, openFrac));
   const tipOffset = Math.max(0.04, offset - 0.03);
   return <group>
-    <Sphere args={[0.12, 16, 16]}>
-      <meshStandardMaterial color="#ffd36b" metalness={0.5} roughness={0.3} emissive="#473310" />
-    </Sphere>
-    <Box args={[0.08, 0.34, 0.1]} position={[0.04, 0, 0]}>
-      <meshStandardMaterial color="#ffd36b" metalness={0.5} roughness={0.3} emissive="#473310" />
-    </Box>
-    <Box args={[0.22, 0.06, 0.08]} position={[0.16, offset, 0]}>
-      <meshStandardMaterial color="#ffd36b" metalness={0.5} roughness={0.3} emissive="#473310" />
-    </Box>
-    <Box args={[0.1, 0.05, 0.08]} position={[0.28, tipOffset, 0]} rotation={[0, 0, -0.45]}>
-      <meshStandardMaterial color="#ffd36b" metalness={0.5} roughness={0.3} emissive="#473310" />
-    </Box>
-    <Box args={[0.22, 0.06, 0.08]} position={[0.16, -offset, 0]}>
-      <meshStandardMaterial color="#ffd36b" metalness={0.5} roughness={0.3} emissive="#473310" />
-    </Box>
-    <Box args={[0.1, 0.05, 0.08]} position={[0.28, -tipOffset, 0]} rotation={[0, 0, 0.45]}>
-      <meshStandardMaterial color="#ffd36b" metalness={0.5} roughness={0.3} emissive="#473310" />
-    </Box>
+    <mesh geometry={GRIPPER_HUB_GEOM} material={TOOL_GOLD_MAT} dispose={null} />
+    <mesh geometry={GRIPPER_PALM_GEOM} material={TOOL_GOLD_MAT} position={[0.04, 0, 0]} dispose={null} />
+    <mesh geometry={GRIPPER_FINGER_GEOM} material={TOOL_GOLD_MAT} position={[0.16, offset, 0]} dispose={null} />
+    <mesh geometry={GRIPPER_TIP_GEOM} material={TOOL_GOLD_MAT} position={[0.28, tipOffset, 0]} rotation={[0, 0, -0.45]} dispose={null} />
+    <mesh geometry={GRIPPER_FINGER_GEOM} material={TOOL_GOLD_MAT} position={[0.16, -offset, 0]} dispose={null} />
+    <mesh geometry={GRIPPER_TIP_GEOM} material={TOOL_GOLD_MAT} position={[0.28, -tipOffset, 0]} rotation={[0, 0, 0.45]} dispose={null} />
   </group>;
 }
 
@@ -109,7 +130,7 @@ function WelderTool({ level = 0.5 }) {
   </group>;
 }
 
-function EndEffectorTool({ toolType = 'gripper', toolOffsetRpy = [0, 0, 0], toolGrip = 50, customStlGeometry }) {
+function EndEffectorTool({ toolType = 'gripper', toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY, toolGrip = 50, customStlGeometry }) {
   const offsetMatrix = useMemo(() => rotationFromRPY(toolOffsetRpy), [toolOffsetRpy]);
   const level = Math.max(0, Math.min(1, Number(toolGrip) / 100 || 0));
   const tipLength = toolType === 'welder' ? 0.38 : toolType === 'vacuum' ? 0.32 : 0.28;
@@ -125,29 +146,27 @@ function EndEffectorTool({ toolType = 'gripper', toolOffsetRpy = [0, 0, 0], tool
     ) : (
       <Gripper openFrac={level} />
     )}
-    <Cylinder args={[0.012, 0.012, 0.28, 10]} position={[tipLength + 0.14, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
-      <meshStandardMaterial color="#62d5b5" emissive="#279d84" emissiveIntensity={0.6} transparent opacity={0.8} />
-    </Cylinder>
-    <Cylinder args={[0, 0.038, 0.09, 12]} position={[tipLength + 0.30, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
-      <meshStandardMaterial color="#62d5b5" emissive="#279d84" emissiveIntensity={0.75} />
-    </Cylinder>
+    <mesh geometry={APPROACH_SHAFT_GEOM} material={APPROACH_SHAFT_MAT} position={[tipLength + 0.14, 0, 0]} rotation={[0, 0, -Math.PI / 2]} dispose={null} />
+    <mesh geometry={APPROACH_TIP_GEOM} material={APPROACH_TIP_MAT} position={[tipLength + 0.30, 0, 0]} rotation={[0, 0, -Math.PI / 2]} dispose={null} />
   </group>;
 }
 
-function DHLink({ joint, index, isLast, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, children }) {
-  const d = joint.type === 'P' ? joint.val : joint.d;
-  const theta = (joint.type === 'R' ? joint.val : joint.theta) * DEG;
+function DHLink({ joint, index, isLast, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, modelStyle, children }) {
+  const { id, type, a, alpha, d: jointD, theta: jointTheta, val } = joint;
+  const d = type === 'P' ? val : jointD;
+  const theta = (type === 'R' ? val : jointTheta) * DEG;
+  const transform = useMemo(() => dhMatrix({ type, a, alpha, d: jointD, theta: jointTheta, val }), [type, a, alpha, jointD, jointTheta, val]);
+  const style = useMemo(() => resolveJointModelStyle(modelStyle, id), [modelStyle, id]);
+  const linkGeom = LINK_SHAPE_GEOMS[style.linkShape] || UNIT_LINK_CYL_GEOM;
   return <group>
-    {joint.type === 'R' ? <Cylinder args={[0.3, 0.3, 0.4, 24]} rotation={[Math.PI / 2, 0, 0]}>
-      <meshStandardMaterial color="#e65c93" metalness={0.3} roughness={0.45} />
-    </Cylinder> : <Box args={[0.35, 0.35, 0.6]} position={[0, 0, d / 2]}>
-      <meshStandardMaterial color="#42b1e1" metalness={0.3} roughness={0.45} />
-    </Box>}
+    {type === 'R'
+      ? <mesh geometry={REV_MOTOR_GEOM} material={REV_MOTOR_MAT} rotation={[Math.PI / 2, 0, 0]} scale={[style.revRadius, style.revLength, style.revRadius]} dispose={null} />
+      : <mesh geometry={PRISM_BOX_GEOM} material={PRISM_BOX_MAT} position={[0, 0, d / 2]} scale={[style.prismWidth, style.prismWidth, style.prismLength]} dispose={null} />}
     <group rotation={[0, 0, theta]}>
-      {d !== 0 && <Cylinder args={[0.065, 0.065, Math.abs(d), 16]} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, d / 2]}><meshStandardMaterial color="#70d9b0" /></Cylinder>}
-      {joint.a !== 0 && <Cylinder args={[0.065, 0.065, Math.abs(joint.a), 16]} rotation={[0, 0, Math.PI / 2]} position={[joint.a / 2, 0, d]}><meshStandardMaterial color="#70d9b0" /></Cylinder>}
+      {d !== 0 && <mesh geometry={linkGeom} material={LINK_SHAFT_MAT} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, d / 2]} scale={[style.linkRadius, Math.abs(d), style.linkRadius]} dispose={null} />}
+      {a !== 0 && <mesh geometry={linkGeom} material={LINK_SHAFT_MAT} rotation={[0, 0, Math.PI / 2]} position={[a / 2, 0, d]} scale={[style.linkRadius, Math.abs(a), style.linkRadius]} dispose={null} />}
     </group>
-    <group matrix={dhMatrix(joint)} matrixAutoUpdate={false}>
+    <group matrix={transform} matrixAutoUpdate={false}>
       {showFrames && <Frame index={index + 1} />}
       {isLast && <EndEffectorTool toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} customStlGeometry={customStlGeometry} />}
       {children}
@@ -155,10 +174,10 @@ function DHLink({ joint, index, isLast, showFrames, customStlGeometry, toolType,
   </group>;
 }
 
-function RobotBuilder({ joints, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, index = 0 }) {
+function RobotBuilder({ joints, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, modelStyle, index = 0 }) {
   if (index >= joints.length) return null;
-  return <DHLink joint={joints[index]} index={index} isLast={index === joints.length - 1} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip}>
-    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} index={index + 1} />
+  return <DHLink joint={joints[index]} index={index} isLast={index === joints.length - 1} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} modelStyle={modelStyle}>
+    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} modelStyle={modelStyle} index={index + 1} />
   </DHLink>;
 }
 
@@ -219,19 +238,14 @@ function TrajectoryVisualizer({ pathPoints, waypointCoords, visible }) {
     </line>
     {waypointCoords?.map((pos, idx) => (
       <group key={idx} position={pos}>
-        <Sphere args={[0.09, 12, 12]}>
-          <meshStandardMaterial color="#ff9f43" emissive="#d9534f" emissiveIntensity={0.5} />
-        </Sphere>
-        <mesh>
-          <torusGeometry args={[0.16, 0.016, 10, 24]} />
-          <meshStandardMaterial color="#ffb86c" emissive="#ff9f43" emissiveIntensity={0.6} transparent opacity={0.85} />
-        </mesh>
+        <mesh geometry={WAYPOINT_SPHERE_GEOM} material={WAYPOINT_SPHERE_MAT} dispose={null} />
+        <mesh geometry={WAYPOINT_HALO_GEOM} material={WAYPOINT_HALO_MAT} dispose={null} />
       </group>
     ))}
   </group>;
 }
 
-function TargetGizmo({ position, rpy, enabled = true, gizmoMode = 'translate', taskMode = 'position', onDragTarget }) {
+function TargetGizmo({ position, rpy, enabled = true, gizmoMode = 'translate', taskMode = 'position', onDragTarget, onDragStart, onDragEnd }) {
   const targetRef = useRef(null);
   const isDraggingRef = useRef(false);
   const validPos = Array.isArray(position) && position.length === 3 && position.every(Number.isFinite);
@@ -239,16 +253,19 @@ function TargetGizmo({ position, rpy, enabled = true, gizmoMode = 'translate', t
   const [r = 0, p = 0, y = 0] = Array.isArray(rpy) && rpy.length === 3 ? rpy : [0, 0, 0];
 
   useEffect(() => {
+    if (!enabled || !validPos) {
+      isDraggingRef.current = false;
+    }
     if (!validPos || !targetRef.current || isDraggingRef.current) return;
     targetRef.current.position.set(px, py, pz);
     targetRef.current.rotation.set(r * DEG, p * DEG, y * DEG, 'ZYX');
     targetRef.current.updateMatrixWorld();
-  }, [validPos, px, py, pz, r, p, y]);
+  }, [enabled, validPos, px, py, pz, r, p, y]);
 
   if (!validPos) return null;
 
   return <>
-    <group ref={targetRef} position={[px, py, pz]} rotation={[r * DEG, p * DEG, y * DEG, 'ZYX']}>
+    <group ref={targetRef}>
       <Sphere args={[0.14, 16, 16]}>
         <meshStandardMaterial color="#4dd4ff" emissive="#1b8fb8" emissiveIntensity={0.6} transparent opacity={0.45} />
       </Sphere>
@@ -274,17 +291,17 @@ function TargetGizmo({ position, rpy, enabled = true, gizmoMode = 'translate', t
         size={0.78}
         space={gizmoMode === 'rotate' ? 'local' : 'world'}
         showZ={taskMode !== 'xy' || gizmoMode === 'rotate'}
-        onMouseDown={() => { isDraggingRef.current = true; }}
-        onMouseUp={() => { isDraggingRef.current = false; }}
+        onMouseDown={() => { isDraggingRef.current = true; onDragStart?.(); }}
+        onMouseUp={() => { isDraggingRef.current = false; onDragEnd?.(); }}
         onObjectChange={() => {
           const obj = targetRef.current;
           if (!obj || !isDraggingRef.current) return;
           if (gizmoMode === 'translate') {
             const nextZ = taskMode === 'xy' ? pz : obj.position.z;
             if (taskMode === 'xy') obj.position.z = pz;
-            const clamped = onDragTarget?.({ position: [obj.position.x, obj.position.y, nextZ] });
-            if (Array.isArray(clamped) && clamped.length === 3) {
-              obj.position.set(clamped[0], clamped[1], clamped[2]);
+            const bounded = onDragTarget?.({ position: [obj.position.x, obj.position.y, nextZ] });
+            if (Array.isArray(bounded?.position) && bounded.position.length === 3) {
+              obj.position.set(bounded.position[0], bounded.position[1], bounded.position[2]);
             }
           } else if (gizmoMode === 'rotate') {
             const euler = new Euler().setFromQuaternion(obj.quaternion, 'ZYX');
@@ -293,7 +310,13 @@ function TargetGizmo({ position, rpy, enabled = true, gizmoMode = 'translate', t
               Math.round((euler.y / DEG) * 10) / 10,
               Math.round((euler.z / DEG) * 10) / 10,
             ];
-            onDragTarget?.({ rpy: nextRpy });
+            const bounded = onDragTarget?.({ rpy: nextRpy });
+            if (Array.isArray(bounded?.position) && bounded.position.length === 3) {
+              obj.position.set(bounded.position[0], bounded.position[1], bounded.position[2]);
+            }
+            if (Array.isArray(bounded?.rpy) && bounded.rpy.length === 3) {
+              obj.rotation.set(bounded.rpy[0] * DEG, bounded.rpy[1] * DEG, bounded.rpy[2] * DEG, 'ZYX');
+            }
           }
         }}
       />
@@ -318,13 +341,25 @@ function CollisionMarker({ position }) {
   </group>;
 }
 
-function EnvironmentObstacle({ environment }) {
+function EnvironmentObstacle({ environment, obstacleGizmoEnabled = true, onDragObstacle, onSelectObstacle }) {
+  const obstacleRef = useRef(null);
+  const isDraggingRef = useRef(false);
   const floorEnabled = environment?.floorEnabled ?? true;
   const floorZ = Number.isFinite(environment?.floorZ) ? environment.floorZ : -0.22;
   const showPlate = floorEnabled && Math.abs(floorZ - (-0.22)) > 1e-3;
   const obs = environment?.obstacle;
-  const showObstacle = Boolean(obs?.enabled && Array.isArray(obs.position) && obs.position.length === 3);
+  const showObstacle = Boolean(obs?.enabled && Array.isArray(obs.position) && obs.position.length === 3 && obs.position.every(Number.isFinite));
+  const [ox, oy, oz] = showObstacle ? obs.position : [3.5, -2.5, 1.0];
   const size = showObstacle ? Math.max(0.1, Number(obs.radius) || 0.8) : 0.8;
+
+  useEffect(() => {
+    if (!showObstacle || !obstacleGizmoEnabled) {
+      isDraggingRef.current = false;
+    }
+    if (!showObstacle || !obstacleRef.current || isDraggingRef.current) return;
+    obstacleRef.current.position.set(ox, oy, oz);
+    obstacleRef.current.updateMatrixWorld();
+  }, [showObstacle, obstacleGizmoEnabled, ox, oy, oz]);
 
   return <>
     {showPlate && (
@@ -333,8 +368,15 @@ function EnvironmentObstacle({ environment }) {
         <meshStandardMaterial color="#274047" transparent opacity={0.32} roughness={0.65} />
       </mesh>
     )}
-    {showObstacle && (
-      <group position={obs.position}>
+    {showObstacle && <>
+      <group
+        ref={obstacleRef}
+        position={[ox, oy, oz]}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelectObstacle?.();
+        }}
+      >
         {obs.shape === 'box' ? <>
           <Box args={[size * 2, size * 2, size * 2]}>
             <meshStandardMaterial color="#e07a5f" emissive="#5e2114" emissiveIntensity={0.35} transparent opacity={0.78} roughness={0.4} />
@@ -356,11 +398,33 @@ function EnvironmentObstacle({ environment }) {
           </mesh>
         </>}
       </group>
-    )}
+      {obstacleGizmoEnabled && (
+        <TransformControls
+          object={obstacleRef}
+          mode="translate"
+          size={0.72}
+          space="world"
+          onMouseDown={() => { isDraggingRef.current = true; }}
+          onMouseUp={() => { isDraggingRef.current = false; }}
+          onObjectChange={() => {
+            const obj = obstacleRef.current;
+            if (!obj || !isDraggingRef.current) return;
+            const clampCoord = v => Math.round(Math.max(-30, Math.min(30, v)) * 100) / 100;
+            const nextPos = [
+              clampCoord(obj.position.x),
+              clampCoord(obj.position.y),
+              clampCoord(obj.position.z),
+            ];
+            obj.position.set(nextPos[0], nextPos[1], nextPos[2]);
+            onDragObstacle?.(nextPos);
+          }}
+        />
+      )}
+    </>}
   </>;
 }
 
-function Scene({ joints, showFrames, viewKey, workspaceCloud, showWorkspace, trajectoryPathPoints, trajectoryWaypointCoords, showTrajectory, customStlGeometry, toolType, toolOffsetRpy, toolGrip, ikTarget, ikRpy, gizmoEnabled, gizmoMode, taskMode, onGizmoDrag, collisionPoint, environment }) {
+function Scene({ joints, showFrames, viewKey, workspaceCloud, showWorkspace, trajectoryPathPoints, trajectoryWaypointCoords, showTrajectory, customStlGeometry, toolType, toolOffsetRpy, toolGrip, modelStyle, ikTarget, ikRpy, gizmoEnabled, gizmoMode, taskMode, onGizmoDrag, onGizmoDragStart, onGizmoDragEnd, collisionPoint, environment, obstacleGizmoEnabled, onDragObstacle, onSelectObstacle }) {
   const controls = useRef();
   const gridZ = environment?.floorEnabled ? (Number.isFinite(environment.floorZ) ? environment.floorZ : -0.22) : -0.22;
   return <>
@@ -370,12 +434,17 @@ function Scene({ joints, showFrames, viewKey, workspaceCloud, showWorkspace, tra
     <directionalLight position={[-10, 10, 5]} intensity={0.7} />
     <Grid infiniteGrid fadeDistance={70} sectionColor="#424b50" cellColor="#292f33" rotation={[Math.PI / 2, 0, 0]} position={[0, 0, gridZ]} />
     {showFrames && <Frame index={0} />}
-    <Cylinder args={[0.5, 0.6, 0.2, 24]} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, -0.1]}><meshStandardMaterial color="#adb9bf" metalness={0.5} roughness={0.4} /></Cylinder>
-    <EnvironmentObstacle environment={environment} />
-    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} />
+    <mesh geometry={PEDESTAL_GEOM} material={PEDESTAL_MAT} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, -0.1]} dispose={null} />
+    <EnvironmentObstacle
+      environment={environment}
+      obstacleGizmoEnabled={obstacleGizmoEnabled}
+      onDragObstacle={onDragObstacle}
+      onSelectObstacle={onSelectObstacle}
+    />
+    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} modelStyle={modelStyle} />
     <WorkspacePoints cloud={workspaceCloud} visible={showWorkspace} />
     <TrajectoryVisualizer pathPoints={trajectoryPathPoints} waypointCoords={trajectoryWaypointCoords} visible={showTrajectory} />
-    <TargetGizmo position={ikTarget} rpy={ikRpy} enabled={gizmoEnabled} gizmoMode={gizmoMode} taskMode={taskMode} onDragTarget={onGizmoDrag} />
+    <TargetGizmo position={ikTarget} rpy={ikRpy} enabled={gizmoEnabled} gizmoMode={gizmoMode} taskMode={taskMode} onDragTarget={onGizmoDrag} onDragStart={onGizmoDragStart} onDragEnd={onGizmoDragEnd} />
     <CollisionMarker position={collisionPoint} />
     <OrbitControls ref={controls} makeDefault />
     <CameraFit joints={joints} viewKey={viewKey} controls={controls} />
@@ -383,7 +452,12 @@ function Scene({ joints, showFrames, viewKey, workspaceCloud, showWorkspace, tra
 }
 
 export default function RobotScene(props) {
-  return <Canvas camera={{ position: [10, -12, 10], up: [0, 0, 1], fov: 45 }} gl={{ preserveDrawingBuffer: true }}>
+  return <Canvas
+    frameloop="always"
+    dpr={[1, 2]}
+    camera={{ position: [10, -12, 10], up: [0, 0, 1], fov: 45 }}
+    gl={{ preserveDrawingBuffer: true, powerPreference: 'high-performance', antialias: true }}
+  >
     <Scene {...props} />
   </Canvas>;
 }

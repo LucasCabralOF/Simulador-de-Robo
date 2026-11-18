@@ -1,13 +1,28 @@
+import { DEFAULT_TOOL_OFFSET_RPY } from './kinematics.js';
+
 export const PRESETS = {
   rpr: {
     id: 'rpr',
     name: 'Didático RPR (3-DOF)',
     description: 'Manipulador didático planar das aulas com 2 juntas rotativas e 1 prismática.',
     dof: 3,
+    toolOffsetRpy: [...DEFAULT_TOOL_OFFSET_RPY],
     joints: [
       { id: 1, type: 'R', a: 0, alpha: 90, d: 0, theta: 0, val: 45, min: -180, max: 180, speed: 0 },
       { id: 2, type: 'P', a: 0, alpha: -90, d: 0, theta: 0, val: 5, min: 0, max: 10, speed: 0 },
       { id: 3, type: 'R', a: 5, alpha: 0, d: 0, theta: 0, val: 30, min: -180, max: 180, speed: 0 },
+    ],
+  },
+  prp: {
+    id: 'prp',
+    name: 'PRP Espacial (P2 / 3-DOF)',
+    description: 'Manipulador cilíndrico espacial com elevação vertical (P), giro na coluna (R) e avanço radial (P).',
+    dof: 3,
+    toolOffsetRpy: [0, -90, 0],
+    joints: [
+      { id: 1, type: 'P', a: 0, alpha: 0, d: 0, theta: 90, val: 2.5, min: 0.5, max: 8, speed: 0 },
+      { id: 2, type: 'R', a: 0, alpha: 90, d: 0, theta: 0, val: 30, min: -180, max: 180, speed: 0 },
+      { id: 3, type: 'P', a: 0, alpha: 0, d: 0, theta: 0, val: 4, min: 0.5, max: 8, speed: 0 },
     ],
   },
   scara: {
@@ -15,6 +30,7 @@ export const PRESETS = {
     name: 'SCARA (RRPR)',
     description: 'Robô de montagem industrial e pick-and-place de alta velocidade com 4 eixos.',
     dof: 4,
+    toolOffsetRpy: [0, -90, 0],
     joints: [
       { id: 1, type: 'R', a: 3.5, alpha: 0, d: 2, theta: 0, val: 25, min: -150, max: 150, speed: 0 },
       { id: 2, type: 'R', a: 2.5, alpha: 180, d: 0, theta: 0, val: 35, min: -150, max: 150, speed: 0 },
@@ -27,6 +43,7 @@ export const PRESETS = {
     name: 'PUMA 560 (6R)',
     description: 'Manipulador antropomórfico clássico de 6 graus de liberdade com punho esférico desacoplado.',
     dof: 6,
+    toolOffsetRpy: [0, -90, 0],
     joints: [
       { id: 1, type: 'R', a: 0, alpha: 90, d: 3, theta: 0, val: 0, min: -160, max: 160, speed: 0 },
       { id: 2, type: 'R', a: 3.5, alpha: 0, d: 0, theta: 0, val: -30, min: -225, max: 45, speed: 0 },
@@ -41,6 +58,7 @@ export const PRESETS = {
     name: 'Stanford Arm (RRPRRR)',
     description: 'Braço robótico esférico com junta prismática intermediária e punho de 3 rotações.',
     dof: 6,
+    toolOffsetRpy: [0, -90, 0],
     joints: [
       { id: 1, type: 'R', a: 0, alpha: -90, d: 2.5, theta: 0, val: 0, min: -160, max: 160, speed: 0 },
       { id: 2, type: 'R', a: 0, alpha: 90, d: 1.5, theta: 0, val: 30, min: -120, max: 120, speed: 0 },
@@ -55,6 +73,7 @@ export const PRESETS = {
     name: 'Universal Cobot UR5 (6R)',
     description: 'Cobot colaborativo moderno com 6 juntas rotativas e arquitetura antropomórfica.',
     dof: 6,
+    toolOffsetRpy: [0, -90, 0],
     joints: [
       { id: 1, type: 'R', a: 0, alpha: 90, d: 2.5, theta: 0, val: 0, min: -180, max: 180, speed: 0 },
       { id: 2, type: 'R', a: -3.5, alpha: 0, d: 0, theta: 0, val: -45, min: -180, max: 180, speed: 0 },

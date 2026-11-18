@@ -64,3 +64,24 @@ test('URDF round-trip preserves toolType and toolOffsetRpy via non-enumerable to
   assert.equal(parsed.length, 6);
   assert.deepEqual(parsed.toolConfig, { toolType: 'welder', toolOffsetRpy: [0, -45, 15] });
 });
+
+test('URDF round-trip preserves custom modelStyle link shape and joint sizes (including perJoint)', () => {
+  const joints = PRESETS.rpr.joints;
+  const modelStyle = {
+    linkShape: 'square',
+    linkRadius: 0.14,
+    revRadius: 0.52,
+    revLength: 0.65,
+    prismWidth: 0.58,
+    prismLength: 0.95,
+    perJoint: {
+      2: { linkShape: 'flat', linkRadius: 0.2, prismWidth: 0.72, prismLength: 1.1 },
+    },
+  };
+  const urdf = exportToURDF(joints, 'Styled_RPR', { toolType: 'gripper', toolOffsetRpy: [0, 0, 0], modelStyle });
+  assert.match(urdf, /<model_style link_shape="square" link_radius="0\.14" rev_radius="0\.52" rev_length="0\.65" prism_width="0\.58" prism_length="0\.95">/);
+  assert.match(urdf, /<joint_style id="2" link_shape="flat" link_radius="0\.2" prism_width="0\.72" prism_length="1\.1"\/>/);
+  assert.match(urdf, /<box size="0\.48 0\.22 /);
+  const parsed = parseURDF(urdf);
+  assert.deepEqual(parsed.toolConfig.modelStyle, modelStyle);
+});

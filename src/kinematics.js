@@ -38,6 +38,103 @@ export const TOOL_TYPES = {
   },
 };
 export const TOOL_LIST = Object.values(TOOL_TYPES);
+export const DEFAULT_TOOL_OFFSET_RPY = [0, 0, 0];
+export const LINK_SHAPES = {
+  cylinder: { id: 'cylinder', label: 'Cilíndrica' },
+  square: { id: 'square', label: 'Quadrada' },
+  hex: { id: 'hex', label: 'Hexagonal' },
+  flat: { id: 'flat', label: 'Barra chata' },
+};
+export const LINK_SHAPE_LIST = Object.values(LINK_SHAPES);
+export const MODEL_STYLE_BOUNDS = {
+  linkRadius: [0.02, 0.35],
+  revRadius: [0.08, 0.8],
+  revLength: [0.1, 1.2],
+  prismWidth: [0.1, 1.0],
+  prismLength: [0.15, 1.5],
+};
+export const DEFAULT_MODEL_STYLE = {
+  linkShape: 'cylinder',
+  linkRadius: 0.065,
+  revRadius: 0.3,
+  revLength: 0.4,
+  prismWidth: 0.35,
+  prismLength: 0.6,
+};
+export function normalizeModelStyle(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const linkShape = typeof src.linkShape === 'string' && LINK_SHAPES[src.linkShape]
+    ? src.linkShape
+    : DEFAULT_MODEL_STYLE.linkShape;
+  const pick = (obj, key, fallback) => {
+    const [lo, hi] = MODEL_STYLE_BOUNDS[key];
+    const n = Number(obj[key]);
+    const clamped = Number.isFinite(n) ? clamp(n, lo, hi) : fallback;
+    return Math.round(clamped * 10000) / 10000;
+  };
+  const result = {
+    linkShape,
+    linkRadius: pick(src, 'linkRadius', DEFAULT_MODEL_STYLE.linkRadius),
+    revRadius: pick(src, 'revRadius', DEFAULT_MODEL_STYLE.revRadius),
+    revLength: pick(src, 'revLength', DEFAULT_MODEL_STYLE.revLength),
+    prismWidth: pick(src, 'prismWidth', DEFAULT_MODEL_STYLE.prismWidth),
+    prismLength: pick(src, 'prismLength', DEFAULT_MODEL_STYLE.prismLength),
+  };
+  if (src.perJoint && typeof src.perJoint === 'object' && !Array.isArray(src.perJoint)) {
+    const cleaned = {};
+    for (const [k, v] of Object.entries(src.perJoint)) {
+      if (!/^\d+$/.test(k) || !v || typeof v !== 'object') continue;
+      const entry = {};
+      if (typeof v.linkShape === 'string' && LINK_SHAPES[v.linkShape]) {
+        entry.linkShape = v.linkShape;
+      }
+      for (const dimKey of Object.keys(MODEL_STYLE_BOUNDS)) {
+        if (v[dimKey] !== undefined && v[dimKey] !== null && v[dimKey] !== '' && Number.isFinite(Number(v[dimKey]))) {
+          entry[dimKey] = pick(v, dimKey, result[dimKey]);
+        }
+      }
+      if (Object.keys(entry).length > 0) cleaned[k] = entry;
+    }
+    if (Object.keys(cleaned).length > 0) {
+      result.perJoint = cleaned;
+    }
+  }
+  return result;
+}
+export function resolveJointModelStyle(modelStyle, jointId) {
+  const base = normalizeModelStyle(modelStyle);
+  const override = base.perJoint?.[String(jointId)];
+  if (!override) {
+    return {
+      linkShape: base.linkShape,
+      linkRadius: base.linkRadius,
+      revRadius: base.revRadius,
+      revLength: base.revLength,
+      prismWidth: base.prismWidth,
+      prismLength: base.prismLength,
+      overridden: false,
+    };
+  }
+  return {
+    linkShape: override.linkShape || base.linkShape,
+    linkRadius: override.linkRadius ?? base.linkRadius,
+    revRadius: override.revRadius ?? base.revRadius,
+    revLength: override.revLength ?? base.revLength,
+    prismWidth: override.prismWidth ?? base.prismWidth,
+    prismLength: override.prismLength ?? base.prismLength,
+    overridden: true,
+  };
+}
+export function isDefaultModelStyle(style) {
+  const s = normalizeModelStyle(style);
+  return !s.perJoint
+    && s.linkShape === DEFAULT_MODEL_STYLE.linkShape
+    && Math.abs(s.linkRadius - DEFAULT_MODEL_STYLE.linkRadius) < 1e-6
+    && Math.abs(s.revRadius - DEFAULT_MODEL_STYLE.revRadius) < 1e-6
+    && Math.abs(s.revLength - DEFAULT_MODEL_STYLE.revLength) < 1e-6
+    && Math.abs(s.prismWidth - DEFAULT_MODEL_STYLE.prismWidth) < 1e-6
+    && Math.abs(s.prismLength - DEFAULT_MODEL_STYLE.prismLength) < 1e-6;
+}
 export const DEFAULT_ENVIRONMENT = {
   floorEnabled: true,
   floorZ: -0.22,
@@ -126,11 +223,11 @@ export function orientation(matrix) {
   };
 }
 
-export function computeToolFrame(fkTotal, toolOffsetRpy = [0, 0, 0], toolType = 'gripper') {
+export function computeToolFrame(fkTotal, toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY, toolType = 'gripper') {
   const spec = TOOL_TYPES[toolType] || TOOL_TYPES.gripper;
   const safeOffset = Array.isArray(toolOffsetRpy) && toolOffsetRpy.length === 3
     ? toolOffsetRpy.map(v => (Number.isFinite(v) ? v : 0))
-    : [0, 0, 0];
+    : DEFAULT_TOOL_OFFSET_RPY;
   const offsetMatrix = rotationFromRPY(safeOffset);
   const toolMatrix = fkTotal.clone().multiply(offsetMatrix);
   const tcpVec = new Vector3(spec.length, 0, 0).applyMatrix4(toolMatrix);
@@ -153,6 +250,13 @@ export function flangeRpyFromToolTarget(targetToolRpy, toolOffsetRpy = [0, 0, 0]
   return orientation(flangeMatrix).rpy;
 }
 
+const _vAxis = new Vector3();
+const _vEnd = new Vector3();
+const _vJointPos = new Vector3();
+const _vDelta = new Vector3();
+const _vLinear = new Vector3();
+const _vScratch = new Vector3();
+
 export function forwardKinematics(joints, { includeOrientation = true } = {}) {
   const total = new Matrix4();
   const transforms = [total.clone()];
@@ -163,20 +267,38 @@ export function forwardKinematics(joints, { includeOrientation = true } = {}) {
     total.multiply(link);
     transforms.push(total.clone());
   }
-  const positions = transforms.map(m => new Vector3().setFromMatrixPosition(m));
-  const end = positions.at(-1);
+  const positions = transforms.map(m => [m.elements[12], m.elements[13], m.elements[14]]);
+  const endArr = positions.at(-1);
+  _vEnd.set(endArr[0], endArr[1], endArr[2]);
   const jacobian = Array.from({ length: 6 }, () => []);
-  joints.forEach((joint, index) => {
-    const axis = new Vector3().setFromMatrixColumn(transforms[index], 2);
-    const linear = joint.type === 'P' ? axis : axis.clone().cross(end.clone().sub(positions[index]));
-    const angular = joint.type === 'P' ? new Vector3() : axis;
-    [...linear.toArray(), ...angular.toArray()].forEach((value, row) => jacobian[row].push(value));
-  });
+  for (let index = 0; index < joints.length; index++) {
+    const joint = joints[index];
+    _vAxis.setFromMatrixColumn(transforms[index], 2);
+    if (joint.type === 'P') {
+      jacobian[0].push(_vAxis.x);
+      jacobian[1].push(_vAxis.y);
+      jacobian[2].push(_vAxis.z);
+      jacobian[3].push(0);
+      jacobian[4].push(0);
+      jacobian[5].push(0);
+    } else {
+      const p = positions[index];
+      _vJointPos.set(p[0], p[1], p[2]);
+      _vDelta.subVectors(_vEnd, _vJointPos);
+      _vLinear.crossVectors(_vAxis, _vDelta);
+      jacobian[0].push(_vLinear.x);
+      jacobian[1].push(_vLinear.y);
+      jacobian[2].push(_vLinear.z);
+      jacobian[3].push(_vAxis.x);
+      jacobian[4].push(_vAxis.y);
+      jacobian[5].push(_vAxis.z);
+    }
+  }
   return {
     total,
     transforms,
     links,
-    positions: positions.map(p => p.toArray()),
+    positions,
     jacobian,
     orientation: includeOrientation ? orientation(total) : null,
   };
@@ -308,8 +430,8 @@ export function extractRobotGeometry(joints, fk = forwardKinematics(joints), too
     const d = j.type === 'P' ? j.val : j.d;
     const oCurr = origins[i];
     const oNext = origins[i + 1];
-    const axialEndVec = new Vector3(0, 0, d).applyMatrix4(fk.transforms[i]);
-    const axialEnd = [axialEndVec.x, axialEndVec.y, axialEndVec.z];
+    _vScratch.set(0, 0, d).applyMatrix4(fk.transforms[i]);
+    const axialEnd = [_vScratch.x, _vScratch.y, _vScratch.z];
     if (dist3(oCurr, axialEnd) > 0.08) {
       segments.push({ a: oCurr, b: axialEnd, jointIndex: i, kind: 'axial', label: `Elo ${i + 1}` });
     }
@@ -322,8 +444,8 @@ export function extractRobotGeometry(joints, fk = forwardKinematics(joints), too
     const n = joints.length;
     const endOrigin = origins[n];
     const toolSpec = TOOL_TYPES[toolType] || TOOL_TYPES.gripper;
-    const tipVec = new Vector3(toolSpec.length, 0, 0).applyMatrix4(fk.transforms[n]);
-    gripTip = [tipVec.x, tipVec.y, tipVec.z];
+    _vScratch.set(toolSpec.length, 0, 0).applyMatrix4(fk.transforms[n]);
+    gripTip = [_vScratch.x, _vScratch.y, _vScratch.z];
     if (dist3(endOrigin, gripTip) > 0.05) {
       segments.push({ a: endOrigin, b: gripTip, jointIndex: n, kind: 'gripper', label: toolSpec.shortLabel });
     }
@@ -688,6 +810,28 @@ export function inverseVelocity(joints, jacobian, desired, { mode = 'position', 
   return { rates, achieved, residual, error: norm(rows.map(row => residual[row] / (row < 3 ? length : 1))) };
 }
 
+/**
+ * Computes static joint efforts (torques for R, forces for P) via tau = J^T * F
+ * @param {Array} joints - Robot joint definitions
+ * @param {Array} jacobian - 6xn geometric Jacobian matrix
+ * @param {Array} wrench - [Fx, Fy, Fz, Mx, My, Mz] end-effector wrench
+ */
+export function staticJointEfforts(joints, jacobian, wrench) {
+  if (!Array.isArray(wrench) || wrench.length !== 6 || !wrench.every(Number.isFinite)) {
+    throw new Error('Vetor de força/momento inválido.');
+  }
+  const efforts = joints.map((_, col) => {
+    let sum = 0;
+    for (let row = 0; row < 6; row++) {
+      sum += (jacobian[row]?.[col] ?? 0) * wrench[row];
+    }
+    return sum;
+  });
+  const labels = joints.map((j, i) => (j.type === 'R' ? `T${i + 1}` : `F${i + 1}`));
+  const units = joints.map(j => (j.type === 'R' ? 'N·u' : 'N'));
+  return { efforts, labels, units };
+}
+
 export function integrateJoints(joints, rates, dt, environment = null, toolType = 'gripper') {
   if (!Number.isFinite(dt) || dt <= 0 || rates.length !== joints.length || !rates.every(Number.isFinite)) throw new Error('Passo de integração inválido.');
   const limited = [];
@@ -730,16 +874,16 @@ function solveConstrainedRates(joints, jacobian, error, options) {
   return rates;
 }
 
-export function inverseKinematics(input, target, { mode = 'position', length = 5, damping = 0.02, maxIterations = 160, tolerance = 1e-5, toolType = 'gripper', environment = null } = {}) {
+export function inverseKinematics(input, target, { mode = 'position', length = 5, damping = 0.02, maxIterations = 160, tolerance = 1e-5, maxSeeds = 4, toolType = 'gripper', environment = null } = {}) {
   const initial = normalizeJoints(input);
   if (!target || target.position?.length !== 3 || target.rpy?.length !== 3 || ![...target.position, ...target.rpy].every(Number.isFinite)) throw new Error('Alvo inválido.');
-  if (!TASK_ROWS[mode] || !Number.isFinite(length) || length <= 0 || !Number.isFinite(damping) || damping < 0 || !Number.isInteger(maxIterations) || maxIterations < 1 || !Number.isFinite(tolerance) || tolerance <= 0) throw new Error('Opções do solver inválidas.');
+  if (!TASK_ROWS[mode] || !Number.isFinite(length) || length <= 0 || !Number.isFinite(damping) || damping < 0 || !Number.isInteger(maxIterations) || maxIterations < 1 || !Number.isFinite(tolerance) || tolerance <= 0 || !Number.isInteger(maxSeeds) || maxSeeds < 1) throw new Error('Opções do solver inválidas.');
   const rows = TASK_ROWS[mode];
   const score = error => norm(rows.map(row => error[row] / (row < 3 ? length : 1)));
   let best = null;
   let iterations = 0;
   // Deterministic restarts allow escape from stationary seeds, including a straight arm.
-  for (let seed = 0; seed < 4; seed++) {
+  for (let seed = 0; seed < maxSeeds; seed++) {
     let joints = initial.map((j, i) => ({ ...j, val: seed === 0 ? j.val : seed === 1 ? (j.min + j.max) / 2 : j.min + (j.max - j.min) * (0.5 + 0.28 * Math.sin((i + 1) * (seed + 1))) }));
     if (detectSelfCollision(joints, null, toolType, environment).colliding) {
       if (seed > 0) continue;
@@ -787,5 +931,98 @@ export function inverseKinematics(input, target, { mode = 'position', length = 5
   return {
     ...(best || { joints: initial, error: Infinity, residual: [Infinity, Infinity, Infinity, 0, 0, 0], converged: false }),
     iterations,
+  };
+}
+
+/**
+ * Solves IK warm-started from `inputJoints` for interactive 3D gizmo dragging,
+ * returning the actual achievable position and tool RPY clamped to joint limits,
+ * workspace boundaries, and collision constraints (floor / obstacle / self-collision).
+ */
+export function solveBoundedTarget(inputJoints, target, {
+  mode = 'position',
+  length = 5,
+  damping = 0.02,
+  maxIterations = 40,
+  toolType = 'gripper',
+  toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY,
+  environment = null,
+} = {}) {
+  const current = normalizeJoints(inputJoints).map(j => ({ ...j, speed: 0 }));
+  const currentFk = forwardKinematics(current);
+  const currentEnd = currentFk.positions.at(-1);
+  const currentTool = computeToolFrame(currentFk.total, toolOffsetRpy, toolType);
+  const flangeTarget = {
+    position: target.position,
+    rpy: flangeRpyFromToolTarget(target.rpy, toolOffsetRpy),
+  };
+
+  let res = inverseKinematics(current, flangeTarget, {
+    mode,
+    length,
+    damping,
+    maxIterations,
+    maxSeeds: 1,
+    toolType,
+    environment,
+  });
+
+  // If warm-start made zero progress at a singular straight-arm interior pose, try a small local perturbation.
+  if (!res.converged && res.iterations <= 2 && res.error > 1e-4
+    && current.every((j, i) => Math.abs(j.val - res.joints[i].val) < 1e-5)) {
+    for (let idx = current.length - 1; idx >= 0; idx--) {
+      if (current[idx].type !== 'R') continue;
+      for (const delta of [2, -2]) {
+        const candidateVal = clamp(current[idx].val + delta, current[idx].min, current[idx].max);
+        if (Math.abs(candidateVal - current[idx].val) < 0.1) continue;
+        const nudged = current.map((j, k) => (k === idx ? { ...j, val: candidateVal } : j));
+        const sweptSeed = sweepJointsCollisionFree(current, nudged, toolType, environment);
+        if (sweptSeed.blocked) continue;
+        const attempt = inverseKinematics(sweptSeed.joints, flangeTarget, {
+          mode,
+          length,
+          damping,
+          maxIterations,
+          maxSeeds: 1,
+          toolType,
+          environment,
+        });
+        if (attempt.error < res.error - 1e-6 && !sweepJointsCollisionFree(current, attempt.joints, toolType, environment).blocked) {
+          res = attempt;
+          break;
+        }
+      }
+      if (res.converged || res.error < 1e-4) break;
+    }
+  }
+
+  if (res.joints && validateJoints(res.joints).length === 0
+    && !detectSelfCollision(res.joints, null, toolType, environment).colliding) {
+    const normalized = normalizeJoints(res.joints).map(j => ({ ...j, speed: 0 }));
+    const solvedFk = forwardKinematics(normalized);
+    const rawPos = solvedFk.positions.at(-1);
+    const achievedPos = mode === 'xy' ? [rawPos[0], rawPos[1], currentEnd[2]] : rawPos;
+    const achievedTool = computeToolFrame(solvedFk.total, toolOffsetRpy, toolType);
+    return {
+      joints: normalized,
+      position: achievedPos,
+      rpy: achievedTool.orientation.rpy,
+      converged: res.converged,
+      iterations: res.iterations,
+      error: res.error,
+      residual: res.residual,
+      blocked: false,
+    };
+  }
+
+  return {
+    joints: current,
+    position: [...currentEnd],
+    rpy: [...currentTool.orientation.rpy],
+    converged: false,
+    iterations: res.iterations,
+    error: res.error,
+    residual: res.residual,
+    blocked: true,
   };
 }

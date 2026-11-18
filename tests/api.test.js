@@ -71,6 +71,38 @@ test('isolated SQLite CRUD, validation, legacy compatibility and error responses
   const loadedToolSim = await (await fetch(`${base}/${toolSaved.id}`)).json();
   assert.deepEqual(loadedToolSim.toolConfig, { toolType: 'vacuum', toolOffsetRpy: [0, 90, 0], toolGrip: 65 });
 
+  // Test saving and retrieving custom modelStyle inside toolConfig with clamping
+  const styledSave = await save({
+    name: 'Styled Arm',
+    data: original,
+    toolConfig: {
+      toolType: 'gripper',
+      toolOffsetRpy: [0, 0, 0],
+      toolGrip: 50,
+      modelStyle: {
+        linkShape: 'square',
+        linkRadius: 0.15,
+        revRadius: 0.5,
+        revLength: 0.7,
+        prismWidth: 0.6,
+        prismLength: 0.9,
+        perJoint: { 1: { linkShape: 'hex', revRadius: 0.66 } },
+      },
+    },
+  });
+  assert.equal(styledSave.status, 201);
+  const styledId = (await styledSave.json()).id;
+  const loadedStyled = await (await fetch(`${base}/${styledId}`)).json();
+  assert.deepEqual(loadedStyled.toolConfig.modelStyle, {
+    linkShape: 'square',
+    linkRadius: 0.15,
+    revRadius: 0.5,
+    revLength: 0.7,
+    prismWidth: 0.6,
+    prismLength: 0.9,
+    perJoint: { 1: { linkShape: 'hex', revRadius: 0.66 } },
+  });
+
   assert.equal((await fetch(`${apiRoot}/share/invalid-slug`)).status, 400);
   assert.equal((await fetch(`${apiRoot}/share/rob-00000000`)).status, 404);
 });

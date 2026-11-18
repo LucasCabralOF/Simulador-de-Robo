@@ -4,6 +4,7 @@ import {
   quinticInterp,
   quinticHermiteInterp,
   cubicInterp,
+  trapezoidalInterp,
   computeTrajectoryTimeline,
   evaluateTrajectory,
   sampleTrajectoryPath,
@@ -306,4 +307,27 @@ test('sampleTrajectoryPath exports synchronized time, q, v, a, and TCP linear sp
   // Cartesian LIN profile computes finite positive TCP speeds inside segments
   assert.ok(cartesian.tcpSpeeds.every(Number.isFinite));
   assert.ok(Math.max(...cartesian.tcpSpeeds) > 0.1);
+});
+
+test('trapezoidalInterp (LSPB) reproduces constant accel, cruise velocity, and symmetric decel', () => {
+  // Matches P2 Question 4a: q0 = 0, qf = 2, T = 1.5s -> tb = 0.5s, vc = 2, ac = 4
+  const T = 1.5;
+  const start = trapezoidalInterp(0, 2, 0, T);
+  assert.equal(start.pos, 0);
+  assert.equal(start.vel, 0);
+  assert.ok(Math.abs(start.acc - 4) < 1e-12);
+
+  const atTb = trapezoidalInterp(0, 2, 1 / 3, T);
+  assert.ok(Math.abs(atTb.pos - 0.5) < 1e-12);
+  assert.ok(Math.abs(atTb.vel - 2) < 1e-12);
+
+  const mid = trapezoidalInterp(0, 2, 0.5, T);
+  assert.ok(Math.abs(mid.pos - 1.0) < 1e-12);
+  assert.ok(Math.abs(mid.vel - 2) < 1e-12);
+  assert.equal(mid.acc, 0);
+
+  const end = trapezoidalInterp(0, 2, 1, T);
+  assert.equal(end.pos, 2);
+  assert.equal(end.vel, 0);
+  assert.ok(Math.abs(end.acc - (-4)) < 1e-12);
 });

@@ -120,6 +120,45 @@ export function cubicInterp(q0, q1, s, T) {
 }
 
 /**
+ * Trapezoidal velocity profile (LSPB — Linear Segment with Parabolic Blends)
+ * Default blendRatio = 1/3 matches classic symmetric 1/3 accel - 1/3 cruise - 1/3 decel.
+ * s in [0, 1]
+ */
+export function trapezoidalInterp(q0, q1, s, T, blendRatio = 1 / 3) {
+  const clampedS = Math.max(0, Math.min(1, s));
+  if (T <= 0) {
+    return { pos: clampedS >= 1 ? q1 : q0, vel: 0, acc: 0 };
+  }
+  const r = Math.max(0.05, Math.min(0.5, blendRatio));
+  const delta = q1 - q0;
+  const tb = r * T;
+  const vc = delta / (T * (1 - r));
+  const ac = vc / tb;
+  const t = clampedS * T;
+
+  if (t <= tb) {
+    return {
+      pos: q0 + 0.5 * ac * t * t,
+      vel: ac * t,
+      acc: ac,
+    };
+  }
+  if (t >= T - tb) {
+    const tau = T - t;
+    return {
+      pos: q1 - 0.5 * ac * tau * tau,
+      vel: ac * tau,
+      acc: -ac,
+    };
+  }
+  return {
+    pos: q0 + 0.5 * ac * tb * tb + vc * (t - tb),
+    vel: vc,
+    acc: 0,
+  };
+}
+
+/**
  * Computes segment start/end timestamps for a sequence of waypoints
  */
 export function computeTrajectoryTimeline(waypoints) {
@@ -428,7 +467,11 @@ export function evaluateTrajectory(waypoints, time, type = 'quintic', jointsTemp
       accelerations.push(res.acc);
     }
   } else {
-    const interpFn = type === 'cubic' ? cubicInterp : quinticInterp;
+    const interpFn = type === 'cubic'
+      ? cubicInterp
+      : type === 'trapezoidal'
+        ? trapezoidalInterp
+        : quinticInterp;
     for (let i = 0; i < dof; i++) {
       const startVal = Number.isFinite(q0[i]) ? q0[i] : (Number.isFinite(q1[i]) ? q1[i] : 0);
       const endVal = Number.isFinite(q1[i]) ? q1[i] : startVal;
