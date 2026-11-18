@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PRESETS, PRESET_LIST } from '../src/presets.js';
 import { DEFAULT_JOINTS, computeToolFrame, forwardKinematics, inverseKinematics, validateJoints } from '../src/kinematics.js';
-import { computeCartesianBounds, generateWorkspaceCloud } from '../src/workspace.js';
+import { computeCartesianBounds, generateWorkspaceCloud, heatColor } from '../src/workspace.js';
 import { generateCpp, generatePython, generateRos2 } from '../src/codeGenerator.js';
 
 test('all robot presets pass strict kinematic validation', () => {
@@ -24,7 +24,14 @@ test('all robot presets compute valid forward kinematics', () => {
   }
 });
 
-test('workspace cloud generates points, vertex colors and bounding volume', () => {
+test('workspace cloud generates points, vertex colors (blue near singularity to green at high dexterity) and bounding volume', () => {
+  const singularRgb = heatColor(0);
+  const midRgb = heatColor(0.5);
+  const healthyRgb = heatColor(1);
+  assert.ok(singularRgb[2] > 0.9 && singularRgb[0] < 0.25, 'Singularidades devem tender ao azul');
+  assert.ok(midRgb[1] > 0.75 && midRgb[2] > 0.75, 'Destreza intermediária deve passar pelo ciano');
+  assert.ok(healthyRgb[1] > 0.85 && healthyRgb[0] < 0.25, 'Alta manipulabilidade deve tender ao verde');
+
   const scara = PRESETS.scara.joints;
   const cloud = generateWorkspaceCloud(scara, 200);
   assert.equal(cloud.count, 200);
@@ -144,4 +151,39 @@ test('all default robot presets orient the end-effector straight outward along t
     const dot = tool.approach[0] * linkDir[0] + tool.approach[1] * linkDir[1] + tool.approach[2] * linkDir[2];
     assert.ok(Math.abs(dot - 1) < 1e-6, `${preset.id} tool approach not parallel/straight out from last link (dot=${dot})`);
   }
+});
+
+test('computeCartesianBounds detects interior and boundary singularity intervals inside active axis spans', () => {
+  const rprCenter = inverseKinematics(DEFAULT_JOINTS, { position: [5, 0, 0], rpy: [0, 0, 0] }, { mode: 'xy' });
+  const rprEnd = forwardKinematics(rprCenter.joints).positions.at(-1);
+  const rprBounds = computeCartesianBounds(rprCenter.joints, rprEnd, 'xy');
+  assert.ok(Array.isArray(rprBounds.singularities) && rprBounds.singularities.length === 3);
+  for (let axis = 0; axis < 2; axis++) {
+    assert.ok(rprBounds.singularities[axis].length > 0, `Expected singularity marker on RPR axis ${axis}`);
+    for (const marker of rprBounds.singularities[axis]) {
+      assert.ok(Number.isFinite(marker.start) && Number.isFinite(marker.end));
+      assert.ok(marker.start <= marker.end + 1e-9);
+      assert.ok(marker.start >= rprBounds.min[axis] - 1e-2 && marker.end <= rprBounds.max[axis] + 1e-2);
+      assert.ok(marker.value >= marker.start - 1e-2 && marker.value <= marker.end + 1e-2);
+      assert.ok(['boundary', 'interior'].includes(marker.kind));
+      assert.ok(typeof marker.label === 'string' && marker.label.length > 0);
+    }
+  }
+
+  const ur5 = PRESETS.ur5.joints;
+  const ur5End = forwardKinematics(ur5).positions.at(-1);
+  const ur5Bounds = computeCartesianBounds(ur5, ur5End, 'position');
+  assert.ok(ur5Bounds.singularities.some(list => list.length > 0), 'Expected UR5 Cartesian sliders to surface singularity intervals');
+  for (let axis = 0; axis < 3; axis++) {
+    for (const marker of ur5Bounds.singularities[axis]) {
+      assert.ok(Number.isFinite(marker.start) && Number.isFinite(marker.end) && marker.start <= marker.end + 1e-9);
+      assert.ok(marker.value >= ur5Bounds.min[axis] - 1e-2 && marker.value <= ur5Bounds.max[axis] + 1e-2);
+    }
+  }
+
+  const scaraY0 = inverseKinematics(PRESETS.scara.joints, { position: [3, 0, 0.2], rpy: [0, 0, 0] }, { mode: 'position' });
+  const scaraEnd = forwardKinematics(scaraY0.joints).positions.at(-1);
+  const scaraBounds = computeCartesianBounds(scaraY0.joints, scaraEnd, 'position');
+  const innerDeadZone = scaraBounds.singularities[0].find(m => m.kind === 'interior' && (m.end - m.start) > 1.0);
+  assert.ok(innerDeadZone, 'Expected SCARA X slice at Y=0 to report the central unreachable singular interval');
 });

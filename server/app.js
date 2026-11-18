@@ -17,6 +17,12 @@ function sanitizeToolConfig(raw) {
   const gripNum = Number(raw.toolGrip);
   const toolGrip = Number.isFinite(gripNum) ? Math.max(0, Math.min(100, gripNum)) : 50;
   const result = { toolType, toolOffsetRpy, toolGrip };
+  if (raw.toolScale !== undefined && raw.toolScale !== null) {
+    const scaleNum = Number(raw.toolScale);
+    if (Number.isFinite(scaleNum)) {
+      result.toolScale = Math.round(Math.max(0.4, Math.min(4.0, scaleNum)) * 100) / 100;
+    }
+  }
   if (raw.modelStyle && typeof raw.modelStyle === 'object') {
     result.modelStyle = normalizeModelStyle(raw.modelStyle);
   }

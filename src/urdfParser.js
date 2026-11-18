@@ -44,7 +44,18 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
   // Base link (pedestal)
   xml += `  <link name="base_link">\n`;
   if (hasModelStyle) {
-    const baseAttrs = `link_shape="${style.linkShape}" link_radius="${round(style.linkRadius)}" rev_radius="${round(style.revRadius)}" rev_length="${round(style.revLength)}" prism_width="${round(style.prismWidth)}" prism_length="${round(style.prismLength)}"`;
+    const baseParts = [
+      `link_shape="${style.linkShape}"`,
+      `link_radius="${round(style.linkRadius)}"`,
+      `rev_radius="${round(style.revRadius)}"`,
+      `rev_length="${round(style.revLength)}"`,
+      `prism_width="${round(style.prismWidth)}"`,
+      `prism_length="${round(style.prismLength)}"`,
+    ];
+    if (style.revColor) baseParts.push(`rev_color="${style.revColor}"`);
+    if (style.prismColor) baseParts.push(`prism_color="${style.prismColor}"`);
+    if (style.linkColor) baseParts.push(`link_color="${style.linkColor}"`);
+    const baseAttrs = baseParts.join(' ');
     const perEntries = style.perJoint ? Object.entries(style.perJoint) : [];
     if (perEntries.length === 0) {
       xml += `    <model_style ${baseAttrs}/>\n`;
@@ -58,6 +69,8 @@ export function exportToURDF(joints, robotName = 'DH_Robot', toolConfig = {}) {
         if (ov.revLength !== undefined) attrs.push(`rev_length="${round(ov.revLength)}"`);
         if (ov.prismWidth !== undefined) attrs.push(`prism_width="${round(ov.prismWidth)}"`);
         if (ov.prismLength !== undefined) attrs.push(`prism_length="${round(ov.prismLength)}"`);
+        if (ov.jointColor) attrs.push(`joint_color="${ov.jointColor}"`);
+        if (ov.linkColor) attrs.push(`link_color="${ov.linkColor}"`);
         xml += `      <joint_style ${attrs.join(' ')}/>\n`;
       }
       xml += `    </model_style>\n`;
@@ -210,6 +223,8 @@ export function parseURDF(urdfString) {
         ...(extractAttr(attrsStr, 'rev_length') !== null ? { revLength: extractAttr(attrsStr, 'rev_length') } : {}),
         ...(extractAttr(attrsStr, 'prism_width') !== null ? { prismWidth: extractAttr(attrsStr, 'prism_width') } : {}),
         ...(extractAttr(attrsStr, 'prism_length') !== null ? { prismLength: extractAttr(attrsStr, 'prism_length') } : {}),
+        ...(extractAttr(attrsStr, 'joint_color') ? { jointColor: extractAttr(attrsStr, 'joint_color') } : {}),
+        ...(extractAttr(attrsStr, 'link_color') ? { linkColor: extractAttr(attrsStr, 'link_color') } : {}),
       };
     }
     parsedModelStyle = normalizeModelStyle({
@@ -219,6 +234,9 @@ export function parseURDF(urdfString) {
       revLength: extractAttr(modelStyleMatch[1], 'rev_length'),
       prismWidth: extractAttr(modelStyleMatch[1], 'prism_width'),
       prismLength: extractAttr(modelStyleMatch[1], 'prism_length'),
+      revColor: extractAttr(modelStyleMatch[1], 'rev_color'),
+      prismColor: extractAttr(modelStyleMatch[1], 'prism_color'),
+      linkColor: extractAttr(modelStyleMatch[1], 'link_color'),
       perJoint,
     });
   }

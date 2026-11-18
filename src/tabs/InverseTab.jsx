@@ -6,6 +6,11 @@ import { fmt, vectorText } from '../format';
 import EnvironmentSection from './EnvironmentSection';
 import TaskSettingsFields from './TaskSettingsFields';
 
+const PITCH_SINGULARITY_MARKERS = [
+  { value: -90, start: -93, end: -87, kind: 'interior', label: 'Singularidade RPY (Gimbal Lock): -90°' },
+  { value: 90, start: 87, end: 93, kind: 'interior', label: 'Singularidade RPY (Gimbal Lock): +90°' },
+];
+
 const InverseTab = memo(function InverseTab({
   joints,
   fk,
@@ -24,6 +29,10 @@ const InverseTab = memo(function InverseTab({
   setShowGizmo,
   gizmoMode,
   setGizmoMode,
+  gizmoLockOrientation,
+  setGizmoLockOrientation,
+  gizmoLockPosition,
+  setGizmoLockPosition,
   cartesianBounds,
   target,
   setTarget,
@@ -39,6 +48,8 @@ const InverseTab = memo(function InverseTab({
   solveInverse,
   changeTarget,
   slideTarget,
+  onSliderDragStart,
+  onSliderDragEnd,
   applyOrientationPreset,
   updateJoint,
   addWaypointFromPose,
@@ -85,21 +96,29 @@ const InverseTab = memo(function InverseTab({
             Gizmo 3D interativo
           </Checkbox>
           {showGizmo && (
-            <SegmentedTabs
-              ariaLabel="Modo do gizmo 3D"
-              activeId={gizmoMode}
-              onChange={nextGizmoMode => {
-                setGizmoMode(nextGizmoMode);
-                if (nextGizmoMode === 'rotate' && mode !== 'pose') {
-                  setMode('pose');
-                  setSolution(null);
-                }
-              }}
-              items={[
-                { id: 'translate', label: 'Mover no 3D (XYZ)' },
-                { id: 'rotate', label: 'Girar no 3D (RPY)' },
-              ]}
-            />
+            <>
+              <SegmentedTabs
+                ariaLabel="Modo do gizmo 3D"
+                activeId={gizmoMode}
+                onChange={nextGizmoMode => {
+                  setGizmoMode(nextGizmoMode);
+                  if (nextGizmoMode === 'rotate' && mode !== 'pose') {
+                    setMode('pose');
+                    setSolution(null);
+                  }
+                }}
+                items={[
+                  { id: 'translate', label: 'Mover no 3D (XYZ)' },
+                  { id: 'rotate', label: 'Girar no 3D (RPY)' },
+                ]}
+              />
+              <Checkbox checked={gizmoLockOrientation} onChange={setGizmoLockOrientation}>
+                Travar orientação (RPY) ao mover posição
+              </Checkbox>
+              <Checkbox checked={gizmoLockPosition} onChange={setGizmoLockPosition}>
+                Travar posição (XYZ) ao girar orientação
+              </Checkbox>
+            </>
           )}
         </div>
         <div className="ik-slider-list">
@@ -113,12 +132,48 @@ const InverseTab = memo(function InverseTab({
             const sliderMin = isFixed ? Number((lo - 1).toFixed(3)) : (roundedHi > roundedLo ? roundedLo : Number(lo.toFixed(3)));
             const sliderMax = isFixed ? Number((hi + 1).toFixed(3)) : (roundedHi > roundedLo ? roundedHi : Number(hi.toFixed(3)));
             const sliderVal = isFixed ? sliderMin : Math.max(sliderMin, Math.min(sliderMax, target.position[i]));
+            const axisSingularities = !isFixed
+              ? (cartesianBounds.singularities?.[i] || [])
+                  .filter(m => {
+                    const s = Number.isFinite(m.start) ? m.start : m.value;
+                    const e = Number.isFinite(m.end) ? m.end : m.value;
+                    return e >= lo - 0.05 && s <= hi + 0.05;
+                  })
+                  .map(m => {
+                    const s = Number.isFinite(m.start) ? Math.max(sliderMin, Math.min(sliderMax, m.start)) : Math.max(sliderMin, Math.min(sliderMax, m.value));
+                    const e = Number.isFinite(m.end) ? Math.max(sliderMin, Math.min(sliderMax, m.end)) : Math.max(sliderMin, Math.min(sliderMax, m.value));
+                    return {
+                      ...m,
+                      start: Math.min(s, e),
+                      end: Math.max(s, e),
+                      value: Math.max(sliderMin, Math.min(sliderMax, m.value)),
+                    };
+                  })
+              : [];
             return (
               <div className="ik-slider-card" key={axis}>
                 <div className="ik-slider-header">
                   <div className="ik-slider-meta">
                     <strong>Alvo {axis} (u)</strong>
-                    <span className="muted">Alcance: [{fmt(lo, 2)}, {fmt(hi, 2)}] u</span>
+                    <span className="muted">
+                      Alcance: [{fmt(lo, 2)}, {fmt(hi, 2)}] u
+                      {axisSingularities.length > 0 && (
+                        <>
+                          {' · '}
+                          <span
+                            className="ik-singularity-badge"
+                            title={axisSingularities.map(m => m.label).join(' · ')}
+                          >
+                            <span className="ik-singularity-legend-dot" aria-hidden="true" />
+                            Sing.: {axisSingularities.map(m => (
+                              Math.abs(m.end - m.start) >= 0.05
+                                ? `[${fmt(m.start, 1)}, ${fmt(m.end, 1)}]`
+                                : fmt(m.value, 2)
+                            )).join(', ')}
+                          </span>
+                        </>
+                      )}
+                    </span>
                   </div>
                   {numeric(`Alvo ${axis} (u)`, target.position[i], v => changeTarget('position', i, v), { compact: true })}
                 </div>
@@ -128,7 +183,12 @@ const InverseTab = memo(function InverseTab({
                   min={sliderMin}
                   max={sliderMax}
                   disabled={isFixed}
+                  markers={axisSingularities}
                   value={sliderVal}
+                  onPointerDown={onSliderDragStart}
+                  onPointerUp={onSliderDragEnd}
+                  onPointerCancel={onSliderDragEnd}
+                  onBlur={onSliderDragEnd}
                   onChange={raw => {
                     const nextVal = Math.max(sliderMin, Math.min(sliderMax, Math.round(raw * 1000) / 1000));
                     slideTarget('position', i, nextVal);
@@ -156,12 +216,24 @@ const InverseTab = memo(function InverseTab({
         <div className="ik-slider-list">
           {['Roll', 'Pitch', 'Yaw'].map((axis, i) => {
             const sliderVal = Math.max(-180, Math.min(180, target.rpy[i]));
+            const rpyMarkers = i === 1 ? PITCH_SINGULARITY_MARKERS : undefined;
             return (
               <div className="ik-slider-card" key={axis}>
                 <div className="ik-slider-header">
                   <div className="ik-slider-meta">
                     <strong>{axis} alvo (°)</strong>
-                    <span className="muted">Alcance: [-180.00, 180.00] °</span>
+                    <span className="muted">
+                      Alcance: [-180.00, 180.00] °
+                      {rpyMarkers && (
+                        <>
+                          {' · '}
+                          <span className="ik-singularity-badge" title="Singularidade RPY (Gimbal Lock) em ±90°">
+                            <span className="ik-singularity-legend-dot" aria-hidden="true" />
+                            Sing. (Gimbal Lock): ±90°
+                          </span>
+                        </>
+                      )}
+                    </span>
                   </div>
                   {numeric(`${axis} alvo (°)`, target.rpy[i], v => changeTarget('rpy', i, v), { compact: true })}
                 </div>
@@ -170,7 +242,12 @@ const InverseTab = memo(function InverseTab({
                   ariaValueText={`${fmt(sliderVal, 1)} °`}
                   min={-180}
                   max={180}
+                  markers={rpyMarkers}
                   value={sliderVal}
+                  onPointerDown={onSliderDragStart}
+                  onPointerUp={onSliderDragEnd}
+                  onPointerCancel={onSliderDragEnd}
+                  onBlur={onSliderDragEnd}
                   onChange={raw => {
                     const nextVal = Math.max(-180, Math.min(180, Math.round(raw * 10) / 10));
                     slideTarget('rpy', i, nextVal);
@@ -246,6 +323,10 @@ const InverseTab = memo(function InverseTab({
                   min={joint.min}
                   max={joint.max}
                   value={joint.val}
+                  onPointerDown={onSliderDragStart}
+                  onPointerUp={onSliderDragEnd}
+                  onPointerCancel={onSliderDragEnd}
+                  onBlur={onSliderDragEnd}
                   onChange={val => updateJoint(joint.id, { val }, { continuous: true })}
                 />
                 <div className="limit-fields ik-limit-fields">

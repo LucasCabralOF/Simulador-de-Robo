@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Box, Sphere, Grid, TransformControls, Cylinder } from '@react-three/drei';
-import { AxesHelper, Box3, BoxGeometry, BufferAttribute, CanvasTexture, CylinderGeometry, Euler, MathUtils, MeshStandardMaterial, SphereGeometry, TorusGeometry, Vector3 } from 'three';
-import { DEFAULT_TOOL_OFFSET_RPY, DEG, dhMatrix, forwardKinematics, resolveJointModelStyle, rotationFromRPY } from './kinematics';
+import { AxesHelper, Box3, BoxGeometry, BufferAttribute, CanvasTexture, CatmullRomCurve3, CylinderGeometry, Euler, MathUtils, MeshStandardMaterial, SphereGeometry, TorusGeometry, TubeGeometry, Vector3 } from 'three';
+import { DEFAULT_JOINT_COLORS, DEFAULT_TOOL_OFFSET_RPY, DEG, dhMatrix, forwardKinematics, resolveJointModelStyle, rotationFromRPY } from './kinematics';
 
 // Shared GPU geometries & materials to prevent buffer/shader churn during 60 FPS animations
 const REV_MOTOR_GEOM = new CylinderGeometry(1, 1, 1, 24);
@@ -24,18 +24,71 @@ const GRIPPER_HUB_GEOM = new SphereGeometry(0.12, 16, 16);
 const GRIPPER_PALM_GEOM = new BoxGeometry(0.08, 0.34, 0.1);
 const GRIPPER_FINGER_GEOM = new BoxGeometry(0.22, 0.06, 0.08);
 const GRIPPER_TIP_GEOM = new BoxGeometry(0.1, 0.05, 0.08);
+const WELDER_NECK_GEOM = new TubeGeometry(
+  new CatmullRomCurve3([
+    new Vector3(0.125, 0, -0.105),
+    new Vector3(0.185, 0, -0.102),
+    new Vector3(0.24, 0, -0.072),
+    new Vector3(0.285, 0, -0.042),
+  ]),
+  22,
+  0.026,
+  14,
+  false
+);
+const WELDER_CABLE_GEOM = new TubeGeometry(
+  new CatmullRomCurve3([
+    new Vector3(0.0, 0, -0.105),
+    new Vector3(-0.06, 0, -0.115),
+    new Vector3(-0.12, 0, -0.155),
+  ]),
+  14,
+  0.022,
+  12,
+  false
+);
 const APPROACH_SHAFT_GEOM = new CylinderGeometry(0.012, 0.012, 0.28, 10);
 const APPROACH_TIP_GEOM = new CylinderGeometry(0, 0.038, 0.09, 12);
 
 const REV_MOTOR_MAT = new MeshStandardMaterial({ color: '#e65c93', metalness: 0.3, roughness: 0.45 });
+const REV_MOTOR_SELECTED_MAT = new MeshStandardMaterial({ color: '#ff85b3', emissive: '#c92a68', emissiveIntensity: 0.6, metalness: 0.35, roughness: 0.35 });
 const PRISM_BOX_MAT = new MeshStandardMaterial({ color: '#42b1e1', metalness: 0.3, roughness: 0.45 });
+const PRISM_BOX_SELECTED_MAT = new MeshStandardMaterial({ color: '#70e2ff', emissive: '#187da8', emissiveIntensity: 0.6, metalness: 0.35, roughness: 0.35 });
 const LINK_SHAFT_MAT = new MeshStandardMaterial({ color: '#70d9b0' });
+const LINK_SHAFT_SELECTED_MAT = new MeshStandardMaterial({ color: '#9ef7d2', emissive: '#1f7a58', emissiveIntensity: 0.45 });
+const GHOST_MAT = new MeshStandardMaterial({ color: '#5ce1e6', emissive: '#1b8fb8', emissiveIntensity: 0.35, transparent: true, opacity: 0.22, depthWrite: false });
+const ELLIPSOID_GEOM = new SphereGeometry(1, 24, 18);
+const ELLIPSOID_MAT = new MeshStandardMaterial({ color: '#3dd6b5', emissive: '#1b8fb8', emissiveIntensity: 0.4, transparent: true, opacity: 0.24, depthWrite: false, roughness: 0.3 });
+const ELLIPSOID_WIRE_MAT = new MeshStandardMaterial({ color: '#62d5b5', emissive: '#3dd6b5', emissiveIntensity: 0.65, wireframe: true, transparent: true, opacity: 0.45, depthWrite: false });
 const TOOL_GOLD_MAT = new MeshStandardMaterial({ color: '#ffd36b', metalness: 0.5, roughness: 0.3, emissive: '#473310' });
 const PEDESTAL_MAT = new MeshStandardMaterial({ color: '#adb9bf', metalness: 0.5, roughness: 0.4 });
 const WAYPOINT_SPHERE_MAT = new MeshStandardMaterial({ color: '#ff9f43', emissive: '#d9534f', emissiveIntensity: 0.5 });
 const WAYPOINT_HALO_MAT = new MeshStandardMaterial({ color: '#ffb86c', emissive: '#ff9f43', emissiveIntensity: 0.6, transparent: true, opacity: 0.85 });
 const APPROACH_SHAFT_MAT = new MeshStandardMaterial({ color: '#62d5b5', emissive: '#279d84', emissiveIntensity: 0.6, transparent: true, opacity: 0.8 });
 const APPROACH_TIP_MAT = new MeshStandardMaterial({ color: '#62d5b5', emissive: '#279d84', emissiveIntensity: 0.75 });
+const CUSTOM_MAT_CACHE = new Map();
+function getStyledMaterial(color, defaultColor, defaultMat, selectedMat, isSelected, isLink = false) {
+  if (!color || color === defaultColor) {
+    return isSelected ? selectedMat : defaultMat;
+  }
+  const key = `${color}:${isSelected ? 1 : 0}:${isLink ? 1 : 0}`;
+  let mat = CUSTOM_MAT_CACHE.get(key);
+  if (!mat) {
+    mat = isLink
+      ? new MeshStandardMaterial({
+          color,
+          ...(isSelected ? { emissive: color, emissiveIntensity: 0.35 } : {}),
+        })
+      : new MeshStandardMaterial({
+          color,
+          metalness: isSelected ? 0.35 : 0.3,
+          roughness: isSelected ? 0.35 : 0.45,
+          ...(isSelected ? { emissive: color, emissiveIntensity: 0.45 } : {}),
+        });
+    CUSTOM_MAT_CACHE.set(key, mat);
+  }
+  return mat;
+}
 
 function AxisLabel({ text, position, color }) {
   const texture = useMemo(() => {
@@ -74,16 +127,17 @@ function Frame({ index }) {
   </>;
 }
 
-function Gripper({ openFrac = 0.5 }) {
+function Gripper({ openFrac = 0.5, ghost = false }) {
   const offset = 0.07 + 0.12 * Math.max(0, Math.min(1, openFrac));
   const tipOffset = Math.max(0.04, offset - 0.03);
+  const mat = ghost ? GHOST_MAT : TOOL_GOLD_MAT;
   return <group>
-    <mesh geometry={GRIPPER_HUB_GEOM} material={TOOL_GOLD_MAT} dispose={null} />
-    <mesh geometry={GRIPPER_PALM_GEOM} material={TOOL_GOLD_MAT} position={[0.04, 0, 0]} dispose={null} />
-    <mesh geometry={GRIPPER_FINGER_GEOM} material={TOOL_GOLD_MAT} position={[0.16, offset, 0]} dispose={null} />
-    <mesh geometry={GRIPPER_TIP_GEOM} material={TOOL_GOLD_MAT} position={[0.28, tipOffset, 0]} rotation={[0, 0, -0.45]} dispose={null} />
-    <mesh geometry={GRIPPER_FINGER_GEOM} material={TOOL_GOLD_MAT} position={[0.16, -offset, 0]} dispose={null} />
-    <mesh geometry={GRIPPER_TIP_GEOM} material={TOOL_GOLD_MAT} position={[0.28, -tipOffset, 0]} rotation={[0, 0, 0.45]} dispose={null} />
+    <mesh geometry={GRIPPER_HUB_GEOM} material={mat} dispose={null} />
+    <mesh geometry={GRIPPER_PALM_GEOM} material={mat} position={[0.04, 0, 0]} dispose={null} />
+    <mesh geometry={GRIPPER_FINGER_GEOM} material={mat} position={[0.16, offset, 0]} dispose={null} />
+    <mesh geometry={GRIPPER_TIP_GEOM} material={mat} position={[0.28, tipOffset, 0]} rotation={[0, 0, -0.45]} dispose={null} />
+    <mesh geometry={GRIPPER_FINGER_GEOM} material={mat} position={[0.16, -offset, 0]} dispose={null} />
+    <mesh geometry={GRIPPER_TIP_GEOM} material={mat} position={[0.28, -tipOffset, 0]} rotation={[0, 0, 0.45]} dispose={null} />
   </group>;
 }
 
@@ -112,79 +166,134 @@ function VacuumTool({ level = 0.5 }) {
 function WelderTool({ level = 0.5 }) {
   const active = Math.max(0, Math.min(1, level));
   return <group>
-    <Sphere args={[0.11, 16, 16]}>
-      <meshStandardMaterial color="#ffd36b" metalness={0.5} roughness={0.3} emissive="#473310" />
-    </Sphere>
-    <Cylinder args={[0.095, 0.095, 0.12, 20]} position={[0.07, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
-      <meshStandardMaterial color="#2f3a44" metalness={0.3} roughness={0.5} />
+    {/* Flange hub & anti-collision offset mount */}
+    <Cylinder args={[0.095, 0.105, 0.05, 20]} position={[0.015, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
+      <meshStandardMaterial color="#adb9bf" metalness={0.6} roughness={0.35} />
     </Cylinder>
-    <Cylinder args={[0.045, 0.085, 0.18, 20]} position={[0.21, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
-      <meshStandardMaterial color="#e8a750" metalness={0.65} roughness={0.28} emissive="#4a2a08" />
+    <Box args={[0.045, 0.052, 0.125]} position={[0.04, 0, -0.052]}>
+      <meshStandardMaterial color="#4e5964" metalness={0.55} roughness={0.4} />
+    </Box>
+    {/* Shock-sensor housing, clamping rings & insulated torch body */}
+    <Cylinder args={[0.058, 0.058, 0.075, 20]} position={[0.035, 0, -0.105]} rotation={[0, 0, -Math.PI / 2]}>
+      <meshStandardMaterial color="#1f252c" roughness={0.6} metalness={0.25} />
     </Cylinder>
-    <Cylinder args={[0.008, 0.025, 0.09, 14]} position={[0.34, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
-      <meshStandardMaterial color="#dce6ee" metalness={0.7} roughness={0.2} />
+    <Cylinder args={[0.064, 0.064, 0.024, 20]} position={[0.082, 0, -0.105]} rotation={[0, 0, -Math.PI / 2]}>
+      <meshStandardMaterial color="#cfd8e0" metalness={0.75} roughness={0.25} />
     </Cylinder>
-    <Sphere args={[0.03 + 0.02 * active, 14, 14]} position={[0.38, 0, 0]}>
+    <Cylinder args={[0.048, 0.052, 0.045, 20]} position={[0.112, 0, -0.105]} rotation={[0, 0, -Math.PI / 2]}>
+      <meshStandardMaterial color="#272e36" roughness={0.55} metalness={0.25} />
+    </Cylinder>
+    {/* Rear coaxial power/gas lead */}
+    <mesh geometry={WELDER_CABLE_GEOM} dispose={null}>
+      <meshStandardMaterial color="#191e24" roughness={0.75} />
+    </mesh>
+    {/* Curved chrome swan neck */}
+    <mesh geometry={WELDER_NECK_GEOM} dispose={null}>
+      <meshStandardMaterial color="#d8e2eb" metalness={0.82} roughness={0.2} />
+    </mesh>
+    {/* Tilted nozzle assembly aligned cleanly toward TCP [0.38, 0, 0] */}
+    <group position={[0.285, 0, -0.042]} rotation={[0, -0.4163, 0]}>
+      <Cylinder args={[0.030, 0.030, 0.018, 20]} position={[0.008, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <meshStandardMaterial color="#e0ac4b" metalness={0.7} roughness={0.3} />
+      </Cylinder>
+      <Cylinder args={[0.021, 0.032, 0.056, 22]} position={[0.044, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <meshStandardMaterial color="#d97b43" metalness={0.72} roughness={0.25} emissive="#4a210a" />
+      </Cylinder>
+      <Cylinder args={[0.009, 0.012, 0.014, 16]} position={[0.078, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <meshStandardMaterial color="#c97d3a" metalness={0.75} roughness={0.25} />
+      </Cylinder>
+      <Cylinder args={[0.0045, 0.0045, 0.020, 10]} position={[0.094, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <meshStandardMaterial color="#e3edf5" metalness={0.8} roughness={0.2} />
+      </Cylinder>
+    </group>
+    {/* Welding arc plasma at exact TCP [0.38, 0, 0] */}
+    <Sphere args={[0.022 + 0.022 * active, 14, 14]} position={[0.38, 0, 0]}>
       <meshStandardMaterial color="#80f2ff" emissive="#4dd4ff" emissiveIntensity={0.6 + 0.9 * active} />
     </Sphere>
   </group>;
 }
 
-function EndEffectorTool({ toolType = 'gripper', toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY, toolGrip = 50, customStlGeometry }) {
+function EndEffectorTool({ toolType = 'gripper', toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY, toolGrip = 50, toolScale = 1, customStlGeometry, ghost = false }) {
   const offsetMatrix = useMemo(() => rotationFromRPY(toolOffsetRpy), [toolOffsetRpy]);
   const level = Math.max(0, Math.min(1, Number(toolGrip) / 100 || 0));
-  const tipLength = toolType === 'welder' ? 0.38 : toolType === 'vacuum' ? 0.32 : 0.28;
+  const safeScale = Number.isFinite(Number(toolScale)) ? Math.max(0.4, Math.min(4.0, Number(toolScale))) : 1;
+  const baseTipLength = toolType === 'welder' ? 0.38 : toolType === 'vacuum' ? 0.32 : 0.28;
+  const tipLength = baseTipLength * safeScale;
   return <group matrix={offsetMatrix} matrixAutoUpdate={false}>
-    {customStlGeometry ? (
-      <mesh geometry={customStlGeometry}>
-        <meshStandardMaterial color="#ffd36b" metalness={0.6} roughness={0.3} />
-      </mesh>
-    ) : toolType === 'vacuum' ? (
-      <VacuumTool level={level} />
-    ) : toolType === 'welder' ? (
-      <WelderTool level={level} />
-    ) : (
-      <Gripper openFrac={level} />
-    )}
-    <mesh geometry={APPROACH_SHAFT_GEOM} material={APPROACH_SHAFT_MAT} position={[tipLength + 0.14, 0, 0]} rotation={[0, 0, -Math.PI / 2]} dispose={null} />
-    <mesh geometry={APPROACH_TIP_GEOM} material={APPROACH_TIP_MAT} position={[tipLength + 0.30, 0, 0]} rotation={[0, 0, -Math.PI / 2]} dispose={null} />
+    <group scale={[safeScale, safeScale, safeScale]}>
+      {ghost ? (
+        <Gripper openFrac={level} ghost />
+      ) : customStlGeometry ? (
+        <mesh geometry={customStlGeometry}>
+          <meshStandardMaterial color="#ffd36b" metalness={0.6} roughness={0.3} />
+        </mesh>
+      ) : toolType === 'vacuum' ? (
+        <VacuumTool level={level} />
+      ) : toolType === 'welder' ? (
+        <WelderTool level={level} />
+      ) : (
+        <Gripper openFrac={level} />
+      )}
+    </group>
+    {!ghost && <>
+      <mesh geometry={APPROACH_SHAFT_GEOM} material={APPROACH_SHAFT_MAT} position={[tipLength + 0.14, 0, 0]} rotation={[0, 0, -Math.PI / 2]} dispose={null} />
+      <mesh geometry={APPROACH_TIP_GEOM} material={APPROACH_TIP_MAT} position={[tipLength + 0.30, 0, 0]} rotation={[0, 0, -Math.PI / 2]} dispose={null} />
+    </>}
   </group>;
 }
 
-function DHLink({ joint, index, isLast, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, modelStyle, children }) {
+function DHLink({ joint, index, isLast, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, toolScale = 1, modelStyle, selectedJointId = null, onSelectJoint, ghost = false, children }) {
   const { id, type, a, alpha, d: jointD, theta: jointTheta, val } = joint;
   const d = type === 'P' ? val : jointD;
   const theta = (type === 'R' ? val : jointTheta) * DEG;
   const transform = useMemo(() => dhMatrix({ type, a, alpha, d: jointD, theta: jointTheta, val }), [type, a, alpha, jointD, jointTheta, val]);
-  const style = useMemo(() => resolveJointModelStyle(modelStyle, id), [modelStyle, id]);
+  const style = useMemo(() => resolveJointModelStyle(modelStyle, id, type, index), [modelStyle, id, type, index]);
   const linkGeom = LINK_SHAPE_GEOMS[style.linkShape] || UNIT_LINK_CYL_GEOM;
+  const isSelected = !ghost && selectedJointId === id;
+  const handleMeshClick = !ghost && onSelectJoint ? (e) => { e.stopPropagation(); onSelectJoint(id); } : undefined;
+  const motorMat = ghost
+    ? GHOST_MAT
+    : getStyledMaterial(style.revColor, DEFAULT_JOINT_COLORS.revColor, REV_MOTOR_MAT, REV_MOTOR_SELECTED_MAT, isSelected, false);
+  const prismMat = ghost
+    ? GHOST_MAT
+    : getStyledMaterial(style.prismColor, DEFAULT_JOINT_COLORS.prismColor, PRISM_BOX_MAT, PRISM_BOX_SELECTED_MAT, isSelected, false);
+  const linkMat = ghost
+    ? GHOST_MAT
+    : getStyledMaterial(style.linkColor, DEFAULT_JOINT_COLORS.linkColor, LINK_SHAFT_MAT, LINK_SHAFT_SELECTED_MAT, isSelected, true);
   return <group>
     {type === 'R'
-      ? <mesh geometry={REV_MOTOR_GEOM} material={REV_MOTOR_MAT} rotation={[Math.PI / 2, 0, 0]} scale={[style.revRadius, style.revLength, style.revRadius]} dispose={null} />
-      : <mesh geometry={PRISM_BOX_GEOM} material={PRISM_BOX_MAT} position={[0, 0, d / 2]} scale={[style.prismWidth, style.prismWidth, style.prismLength]} dispose={null} />}
+      ? <mesh geometry={REV_MOTOR_GEOM} material={motorMat} rotation={[Math.PI / 2, 0, 0]} scale={[style.revRadius, style.revLength, style.revRadius]} onClick={handleMeshClick} dispose={null} />
+      : <mesh geometry={PRISM_BOX_GEOM} material={prismMat} position={[0, 0, d / 2]} scale={[style.prismWidth, style.prismWidth, style.prismLength]} onClick={handleMeshClick} dispose={null} />}
     <group rotation={[0, 0, theta]}>
-      {d !== 0 && <mesh geometry={linkGeom} material={LINK_SHAFT_MAT} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, d / 2]} scale={[style.linkRadius, Math.abs(d), style.linkRadius]} dispose={null} />}
-      {a !== 0 && <mesh geometry={linkGeom} material={LINK_SHAFT_MAT} rotation={[0, 0, Math.PI / 2]} position={[a / 2, 0, d]} scale={[style.linkRadius, Math.abs(a), style.linkRadius]} dispose={null} />}
+      {d !== 0 && <mesh geometry={linkGeom} material={linkMat} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, d / 2]} scale={[style.linkRadius, Math.abs(d), style.linkRadius]} onClick={handleMeshClick} dispose={null} />}
+      {a !== 0 && <mesh geometry={linkGeom} material={linkMat} rotation={[0, 0, Math.PI / 2]} position={[a / 2, 0, d]} scale={[style.linkRadius, Math.abs(a), style.linkRadius]} onClick={handleMeshClick} dispose={null} />}
     </group>
     <group matrix={transform} matrixAutoUpdate={false}>
-      {showFrames && <Frame index={index + 1} />}
-      {isLast && <EndEffectorTool toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} customStlGeometry={customStlGeometry} />}
+      {!ghost && showFrames && <Frame index={index + 1} />}
+      {isLast && <EndEffectorTool toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} toolScale={toolScale} customStlGeometry={customStlGeometry} ghost={ghost} />}
       {children}
     </group>
   </group>;
 }
 
-function RobotBuilder({ joints, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, modelStyle, index = 0 }) {
+function RobotBuilder({ joints, showFrames, customStlGeometry, toolType, toolOffsetRpy, toolGrip, toolScale = 1, modelStyle, selectedJointId = null, onSelectJoint, ghost = false, index = 0 }) {
   if (index >= joints.length) return null;
-  return <DHLink joint={joints[index]} index={index} isLast={index === joints.length - 1} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} modelStyle={modelStyle}>
-    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} modelStyle={modelStyle} index={index + 1} />
+  return <DHLink joint={joints[index]} index={index} isLast={index === joints.length - 1} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} toolScale={toolScale} modelStyle={modelStyle} selectedJointId={selectedJointId} onSelectJoint={onSelectJoint} ghost={ghost}>
+    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} toolScale={toolScale} modelStyle={modelStyle} selectedJointId={selectedJointId} onSelectJoint={onSelectJoint} ghost={ghost} index={index + 1} />
   </DHLink>;
 }
 
-function CameraFit({ joints, viewKey, controls }) {
+const CAMERA_VIEW_DIRS = {
+  iso: new Vector3(1, -1.4, 1.2).normalize(),
+  top: new Vector3(0, -0.001, 1).normalize(),
+  front: new Vector3(0, -1, 0),
+  side: new Vector3(1, 0, 0),
+};
+
+function CameraFit({ joints, viewKey, viewPreset = 'iso', controls }) {
   const previous = useRef('');
   useFrame(({ camera, size }) => {
-    const key = `${viewKey}:${size.width}:${size.height}:${joints.length}`;
+    const key = `${viewKey}:${viewPreset}:${size.width}:${size.height}:${joints.length}`;
     if (previous.current === key || !controls.current) return;
     previous.current = key;
     const fk = forwardKinematics(joints);
@@ -196,7 +305,9 @@ function CameraFit({ joints, viewKey, controls }) {
     const verticalFov = MathUtils.degToRad(camera.fov);
     const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * size.width / size.height);
     const distance = radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2);
-    camera.position.copy(center).add(new Vector3(1, -1.4, 1.2).normalize().multiplyScalar(distance));
+    const dir = CAMERA_VIEW_DIRS[viewPreset] || CAMERA_VIEW_DIRS.iso;
+    camera.up.set(0, 0, 1);
+    camera.position.copy(center).addScaledVector(dir, distance);
     camera.near = Math.max(distance / 10000, 0.001);
     camera.far = Math.max(distance * 20, 1000);
     camera.updateProjectionMatrix();
@@ -204,6 +315,14 @@ function CameraFit({ joints, viewKey, controls }) {
     controls.current.update();
   });
   return null;
+}
+
+function ManipulabilityEllipsoid({ position, ellipsoid, visible }) {
+  if (!visible || !ellipsoid || !Array.isArray(position) || position.length !== 3) return null;
+  return <group position={position} quaternion={ellipsoid.quaternion} scale={ellipsoid.radii}>
+    <mesh geometry={ELLIPSOID_GEOM} material={ELLIPSOID_MAT} dispose={null} />
+    <mesh geometry={ELLIPSOID_GEOM} material={ELLIPSOID_WIRE_MAT} dispose={null} />
+  </group>;
 }
 
 function WorkspacePoints({ cloud, visible }) {
@@ -222,7 +341,7 @@ function WorkspacePoints({ cloud, visible }) {
   </points>;
 }
 
-function TrajectoryVisualizer({ pathPoints, waypointCoords, visible }) {
+function TrajectoryVisualizer({ pathPoints, waypointCoords, visible, onSelectWaypoint }) {
   const lineGeomRef = useRef();
   useEffect(() => {
     if (!visible || !lineGeomRef.current || !pathPoints || pathPoints.length === 0) return;
@@ -237,7 +356,11 @@ function TrajectoryVisualizer({ pathPoints, waypointCoords, visible }) {
       <lineBasicMaterial color="#3dd6b5" />
     </line>
     {waypointCoords?.map((pos, idx) => (
-      <group key={idx} position={pos}>
+      <group
+        key={idx}
+        position={pos}
+        onClick={onSelectWaypoint ? (e) => { e.stopPropagation(); onSelectWaypoint(idx); } : undefined}
+      >
         <mesh geometry={WAYPOINT_SPHERE_GEOM} material={WAYPOINT_SPHERE_MAT} dispose={null} />
         <mesh geometry={WAYPOINT_HALO_GEOM} material={WAYPOINT_HALO_MAT} dispose={null} />
       </group>
@@ -424,7 +547,44 @@ function EnvironmentObstacle({ environment, obstacleGizmoEnabled = true, onDragO
   </>;
 }
 
-function Scene({ joints, showFrames, viewKey, workspaceCloud, showWorkspace, trajectoryPathPoints, trajectoryWaypointCoords, showTrajectory, customStlGeometry, toolType, toolOffsetRpy, toolGrip, modelStyle, ikTarget, ikRpy, gizmoEnabled, gizmoMode, taskMode, onGizmoDrag, onGizmoDragStart, onGizmoDragEnd, collisionPoint, environment, obstacleGizmoEnabled, onDragObstacle, onSelectObstacle }) {
+function Scene({
+  joints,
+  endPosition,
+  showFrames,
+  viewKey,
+  viewPreset = 'iso',
+  workspaceCloud,
+  showWorkspace,
+  trajectoryPathPoints,
+  trajectoryWaypointCoords,
+  showTrajectory,
+  onSelectWaypoint,
+  customStlGeometry,
+  toolType,
+  toolOffsetRpy,
+  toolGrip,
+  toolScale = 1,
+  modelStyle,
+  selectedJointId = null,
+  onSelectJoint,
+  ellipsoid,
+  showEllipsoid = false,
+  ghostJoints,
+  showGhost = false,
+  ikTarget,
+  ikRpy,
+  gizmoEnabled,
+  gizmoMode,
+  taskMode,
+  onGizmoDrag,
+  onGizmoDragStart,
+  onGizmoDragEnd,
+  collisionPoint,
+  environment,
+  obstacleGizmoEnabled,
+  onDragObstacle,
+  onSelectObstacle,
+}) {
   const controls = useRef();
   const gridZ = environment?.floorEnabled ? (Number.isFinite(environment.floorZ) ? environment.floorZ : -0.22) : -0.22;
   return <>
@@ -441,13 +601,42 @@ function Scene({ joints, showFrames, viewKey, workspaceCloud, showWorkspace, tra
       onDragObstacle={onDragObstacle}
       onSelectObstacle={onSelectObstacle}
     />
-    <RobotBuilder joints={joints} showFrames={showFrames} customStlGeometry={customStlGeometry} toolType={toolType} toolOffsetRpy={toolOffsetRpy} toolGrip={toolGrip} modelStyle={modelStyle} />
+    {showGhost && Array.isArray(ghostJoints) && ghostJoints.length > 0 && (
+      <RobotBuilder
+        joints={ghostJoints}
+        showFrames={false}
+        toolType={toolType}
+        toolOffsetRpy={toolOffsetRpy}
+        toolGrip={toolGrip}
+        toolScale={toolScale}
+        modelStyle={modelStyle}
+        ghost
+      />
+    )}
+    <RobotBuilder
+      joints={joints}
+      showFrames={showFrames}
+      customStlGeometry={customStlGeometry}
+      toolType={toolType}
+      toolOffsetRpy={toolOffsetRpy}
+      toolGrip={toolGrip}
+      toolScale={toolScale}
+      modelStyle={modelStyle}
+      selectedJointId={selectedJointId}
+      onSelectJoint={onSelectJoint}
+    />
+    <ManipulabilityEllipsoid position={endPosition} ellipsoid={ellipsoid} visible={showEllipsoid} />
     <WorkspacePoints cloud={workspaceCloud} visible={showWorkspace} />
-    <TrajectoryVisualizer pathPoints={trajectoryPathPoints} waypointCoords={trajectoryWaypointCoords} visible={showTrajectory} />
+    <TrajectoryVisualizer
+      pathPoints={trajectoryPathPoints}
+      waypointCoords={trajectoryWaypointCoords}
+      visible={showTrajectory}
+      onSelectWaypoint={onSelectWaypoint}
+    />
     <TargetGizmo position={ikTarget} rpy={ikRpy} enabled={gizmoEnabled} gizmoMode={gizmoMode} taskMode={taskMode} onDragTarget={onGizmoDrag} onDragStart={onGizmoDragStart} onDragEnd={onGizmoDragEnd} />
     <CollisionMarker position={collisionPoint} />
     <OrbitControls ref={controls} makeDefault />
-    <CameraFit joints={joints} viewKey={viewKey} controls={controls} />
+    <CameraFit joints={joints} viewKey={viewKey} viewPreset={viewPreset} controls={controls} />
   </>;
 }
 

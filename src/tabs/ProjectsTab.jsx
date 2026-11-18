@@ -12,6 +12,7 @@ const ProjectsTab = memo(function ProjectsTab({
   toolType,
   toolOffsetRpy,
   toolGrip,
+  toolScale,
   modelStyle,
   resetDefaultRobot,
   commitJoints,
@@ -37,8 +38,11 @@ const ProjectsTab = memo(function ProjectsTab({
   setToolTypeLoaded,
   setToolOffsetRpyLoaded,
   setToolGripLoaded,
+  setToolScaleLoaded,
   setModelStyleLoaded,
   syncTargetAndModeForJoints,
+  exportProjectJson,
+  handleProjectJsonUpload,
 }) {
   return (
     <>
@@ -62,6 +66,12 @@ const ProjectsTab = memo(function ProjectsTab({
           <FileUploadButton accept=".urdf,.xml" onChange={handleUrdfUpload} inputAriaLabel="Upload de arquivo URDF">
             <Upload size={14} /> Importar robô (URDF)
           </FileUploadButton>
+          <Button aria-label="Exportar projeto JSON" onClick={exportProjectJson}>
+            <Download size={14} /> Exportar projeto (.json)
+          </Button>
+          <FileUploadButton accept=".json,application/json" onChange={handleProjectJsonUpload} inputAriaLabel="Upload de projeto JSON">
+            <Upload size={14} /> Importar projeto (.json)
+          </FileUploadButton>
         </div>
       </section>
 
@@ -81,7 +91,7 @@ const ProjectsTab = memo(function ProjectsTab({
                   name: simName.trim(),
                   data: joints,
                   waypoints,
-                  toolConfig: { toolType, toolOffsetRpy, toolGrip, modelStyle },
+                  toolConfig: { toolType, toolOffsetRpy, toolGrip, toolScale, modelStyle },
                 }),
               });
               setSimName('');
@@ -148,6 +158,7 @@ const ProjectsTab = memo(function ProjectsTab({
                     setToolTypeLoaded(loadedTool.toolType || 'gripper');
                     setToolOffsetRpyLoaded(loadedTool.toolOffsetRpy || [0, 0, 0]);
                     setToolGripLoaded(loadedTool.toolGrip ?? 50);
+                    setToolScaleLoaded?.(Number.isFinite(Number(loadedTool.toolScale)) ? Math.max(0.4, Math.min(4.0, Number(loadedTool.toolScale))) : 1);
                     setModelStyleLoaded(normalizeModelStyle(loadedTool.modelStyle));
                   }
                   commitJoints(normalized);

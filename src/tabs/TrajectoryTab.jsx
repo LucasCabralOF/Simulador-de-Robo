@@ -7,6 +7,7 @@ import TrajectoryCharts from '../TrajectoryCharts';
 
 const TrajectoryTab = memo(function TrajectoryTab({
   joints,
+  modelStyle,
   waypoints,
   trajectoryData,
   playTime,
@@ -135,6 +136,8 @@ const TrajectoryTab = memo(function TrajectoryTab({
         />
         <TrajectoryCharts
           trajectoryData={trajectoryData}
+          joints={joints}
+          modelStyle={modelStyle}
           playTime={playTime}
           interpType={interpType}
           angleUnit={angleUnit}

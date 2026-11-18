@@ -1,7 +1,7 @@
 import { memo, useState } from 'react';
 import { Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { Button, Select, Slider } from '../ui';
-import { normalizeJoints } from '../kinematics';
+import { normalizeJoints, resolveJointChartColor } from '../kinematics';
 import { syncWaypointsToJoints } from '../trajectory';
 import { fmt } from '../format';
 import CollapsibleSection from './CollapsibleSection';
@@ -9,6 +9,7 @@ import EnvironmentSection from './EnvironmentSection';
 
 const ModelTab = memo(function ModelTab({
   joints,
+  modelStyle,
   resetDefaultRobot,
   updateJoint,
   commitJoints,
@@ -48,10 +49,12 @@ const ModelTab = memo(function ModelTab({
         </div>
         {joints.map((joint, index) => {
           const unit = joint.type === 'R' ? '°' : 'u';
+          const jointColor = resolveJointChartColor(modelStyle, joint, index);
           return (
             <div className="actuator" key={joint.id}>
               <div className="control-header">
                 <div className="joint-label-group">
+                  <span className="joint-color-dot" style={{ backgroundColor: jointColor }} aria-hidden="true" />
                   <strong>Junta {index + 1} · {joint.type}</strong>
                   <span className={`joint-type-badge ${joint.type === 'P' ? 'is-prismatic' : 'is-rotational'}`}>
                     {joint.type === 'P' ? 'Prismática' : 'Rotativa'} · Δ {fmt(joint.max - joint.min, joint.type === 'R' ? 0 : 1)} {unit}

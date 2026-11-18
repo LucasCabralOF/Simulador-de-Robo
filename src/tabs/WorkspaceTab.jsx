@@ -52,8 +52,16 @@ const WorkspaceTab = memo(function WorkspaceTab({
               Exibir pontos na cena 3D
             </Checkbox>
           </div>
+          <div className="workspace-legend-card">
+            <div className="workspace-gradient-bar" aria-hidden="true" />
+            <div className="workspace-gradient-labels">
+              <span><strong style={{ color: '#4da6ff' }}>Azul</strong> · Singularidade (w → 0)</span>
+              <span><strong style={{ color: '#00d6e6' }}>Ciano</strong> · Média</span>
+              <span><strong style={{ color: '#24eb74' }}>Verde</strong> · Alta destreza</span>
+            </div>
+          </div>
           <Notice as="p">
-            Gradiente térmico: <strong style={{ color: '#4da6ff' }}>Azul</strong> = proximidade de singularidade (baixa destreza); <strong style={{ color: '#ffea79' }}>Amarelo/Vermelho</strong> = alta destreza articular.
+            Regiões em <strong style={{ color: '#4da6ff' }}>azul</strong> indicam proximidade de singularidades (baixa manipulabilidade); regiões em <strong style={{ color: '#24eb74' }}>verde</strong> indicam maior destreza articular.
           </Notice>
         </section>
       )}

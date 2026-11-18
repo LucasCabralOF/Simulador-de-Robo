@@ -61,6 +61,76 @@ export const DEFAULT_MODEL_STYLE = {
   prismWidth: 0.35,
   prismLength: 0.6,
 };
+export const DEFAULT_JOINT_COLORS = {
+  revColor: '#e65c93',
+  prismColor: '#42b1e1',
+  linkColor: '#70d9b0',
+};
+export const JOINT_CHART_PALETTE = [
+  '#e65c93',
+  '#4da6ff',
+  '#f3b74f',
+  '#62d5b5',
+  '#b59cff',
+  '#ff9868',
+  '#7cd96e',
+  '#e58fd8',
+  '#22d3ee',
+  '#fb7185',
+  '#facc15',
+  '#34d399',
+  '#a78bfa',
+  '#fb923c',
+  '#38bdf8',
+  '#f472b6',
+  '#a3e635',
+  '#c084fc',
+  '#f87171',
+  '#2dd4bf',
+  '#818cf8',
+  '#e879f9',
+  '#4ade80',
+  '#fbbf24',
+];
+export function normalizeHexColor(val) {
+  if (typeof val !== 'string') return null;
+  const trimmed = val.trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(trimmed) ? trimmed : null;
+}
+export function hslToHex(h, s = 82, l = 62) {
+  const hue = ((Number(h) % 360) + 360) % 360;
+  const sat = Math.max(0, Math.min(100, Number(s) || 0)) / 100;
+  const light = Math.max(0, Math.min(100, Number(l) || 0)) / 100;
+  const k = (n) => (n + hue / 30) % 12;
+  const a = sat * Math.min(light, 1 - light);
+  const f = (n) => light - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  const toHex = (x) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, '0');
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+}
+export function hexToHsl(hex) {
+  const norm = normalizeHexColor(hex);
+  if (!norm) return { h: 0, s: 80, l: 60 };
+  const r = parseInt(norm.slice(1, 3), 16) / 255;
+  const g = parseInt(norm.slice(3, 5), 16) / 255;
+  const b = parseInt(norm.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) {
+    return { h: 0, s: 0, l: Math.round(l * 100) };
+  }
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return {
+    h: Math.round((h * 60 + 360) % 360),
+    s: Math.round(s * 100),
+    l: Math.round(l * 100),
+  };
+}
 export function normalizeModelStyle(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const linkShape = typeof src.linkShape === 'string' && LINK_SHAPES[src.linkShape]
@@ -80,6 +150,12 @@ export function normalizeModelStyle(raw) {
     prismWidth: pick(src, 'prismWidth', DEFAULT_MODEL_STYLE.prismWidth),
     prismLength: pick(src, 'prismLength', DEFAULT_MODEL_STYLE.prismLength),
   };
+  const revColor = normalizeHexColor(src.revColor);
+  if (revColor && revColor !== DEFAULT_JOINT_COLORS.revColor) result.revColor = revColor;
+  const prismColor = normalizeHexColor(src.prismColor);
+  if (prismColor && prismColor !== DEFAULT_JOINT_COLORS.prismColor) result.prismColor = prismColor;
+  const linkColor = normalizeHexColor(src.linkColor);
+  if (linkColor && linkColor !== DEFAULT_JOINT_COLORS.linkColor) result.linkColor = linkColor;
   if (src.perJoint && typeof src.perJoint === 'object' && !Array.isArray(src.perJoint)) {
     const cleaned = {};
     for (const [k, v] of Object.entries(src.perJoint)) {
@@ -93,6 +169,10 @@ export function normalizeModelStyle(raw) {
           entry[dimKey] = pick(v, dimKey, result[dimKey]);
         }
       }
+      const jointColor = normalizeHexColor(v.jointColor);
+      if (jointColor) entry.jointColor = jointColor;
+      const jointLinkColor = normalizeHexColor(v.linkColor);
+      if (jointLinkColor) entry.linkColor = jointLinkColor;
       if (Object.keys(entry).length > 0) cleaned[k] = entry;
     }
     if (Object.keys(cleaned).length > 0) {
@@ -101,9 +181,17 @@ export function normalizeModelStyle(raw) {
   }
   return result;
 }
-export function resolveJointModelStyle(modelStyle, jointId) {
+export function resolveJointModelStyle(modelStyle, jointId, jointType = 'R', jointIndex = null) {
   const base = normalizeModelStyle(modelStyle);
   const override = base.perJoint?.[String(jointId)];
+  const indexedPaletteColor = Number.isInteger(jointIndex) && jointIndex >= 0
+    ? JOINT_CHART_PALETTE[jointIndex % JOINT_CHART_PALETTE.length]
+    : null;
+  const revColor = override?.jointColor || base.revColor || indexedPaletteColor || DEFAULT_JOINT_COLORS.revColor;
+  const prismColor = override?.jointColor || base.prismColor || indexedPaletteColor || DEFAULT_JOINT_COLORS.prismColor;
+  const customJointColor = override?.jointColor || (jointType === 'P' ? base.prismColor : base.revColor) || null;
+  const jointColor = jointType === 'P' ? prismColor : revColor;
+  const linkColor = override?.linkColor || base.linkColor || DEFAULT_JOINT_COLORS.linkColor;
   if (!override) {
     return {
       linkShape: base.linkShape,
@@ -112,6 +200,11 @@ export function resolveJointModelStyle(modelStyle, jointId) {
       revLength: base.revLength,
       prismWidth: base.prismWidth,
       prismLength: base.prismLength,
+      revColor,
+      prismColor,
+      jointColor,
+      customJointColor,
+      linkColor,
       overridden: false,
     };
   }
@@ -122,18 +215,29 @@ export function resolveJointModelStyle(modelStyle, jointId) {
     revLength: override.revLength ?? base.revLength,
     prismWidth: override.prismWidth ?? base.prismWidth,
     prismLength: override.prismLength ?? base.prismLength,
+    revColor,
+    prismColor,
+    jointColor,
+    customJointColor,
+    linkColor,
     overridden: true,
   };
 }
 export function isDefaultModelStyle(style) {
   const s = normalizeModelStyle(style);
   return !s.perJoint
+    && !s.revColor
+    && !s.prismColor
+    && !s.linkColor
     && s.linkShape === DEFAULT_MODEL_STYLE.linkShape
     && Math.abs(s.linkRadius - DEFAULT_MODEL_STYLE.linkRadius) < 1e-6
     && Math.abs(s.revRadius - DEFAULT_MODEL_STYLE.revRadius) < 1e-6
     && Math.abs(s.revLength - DEFAULT_MODEL_STYLE.revLength) < 1e-6
     && Math.abs(s.prismWidth - DEFAULT_MODEL_STYLE.prismWidth) < 1e-6
     && Math.abs(s.prismLength - DEFAULT_MODEL_STYLE.prismLength) < 1e-6;
+}
+export function resolveJointChartColor(modelStyle, joint, index = 0) {
+  return resolveJointModelStyle(modelStyle, joint?.id, joint?.type || 'R', index).jointColor;
 }
 export const DEFAULT_ENVIRONMENT = {
   floorEnabled: true,
@@ -223,17 +327,19 @@ export function orientation(matrix) {
   };
 }
 
-export function computeToolFrame(fkTotal, toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY, toolType = 'gripper') {
+export function computeToolFrame(fkTotal, toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY, toolType = 'gripper', toolScale = 1) {
   const spec = TOOL_TYPES[toolType] || TOOL_TYPES.gripper;
+  const safeScale = Number.isFinite(Number(toolScale)) ? clamp(Number(toolScale), 0.4, 4.0) : 1;
   const safeOffset = Array.isArray(toolOffsetRpy) && toolOffsetRpy.length === 3
     ? toolOffsetRpy.map(v => (Number.isFinite(v) ? v : 0))
     : DEFAULT_TOOL_OFFSET_RPY;
   const offsetMatrix = rotationFromRPY(safeOffset);
   const toolMatrix = fkTotal.clone().multiply(offsetMatrix);
-  const tcpVec = new Vector3(spec.length, 0, 0).applyMatrix4(toolMatrix);
+  const tcpVec = new Vector3(spec.length * safeScale, 0, 0).applyMatrix4(toolMatrix);
   const approachVec = new Vector3().setFromMatrixColumn(toolMatrix, 0).normalize();
   return {
     tool: spec,
+    scale: safeScale,
     matrix: toolMatrix,
     tcpPosition: [tcpVec.x, tcpVec.y, tcpVec.z],
     approach: [approachVec.x, approachVec.y, approachVec.z],
@@ -947,6 +1053,8 @@ export function solveBoundedTarget(inputJoints, target, {
   toolType = 'gripper',
   toolOffsetRpy = DEFAULT_TOOL_OFFSET_RPY,
   environment = null,
+  lockPosition = false,
+  lockOrientation = false,
 } = {}) {
   const current = normalizeJoints(inputJoints).map(j => ({ ...j, speed: 0 }));
   const currentFk = forwardKinematics(current);
@@ -956,10 +1064,14 @@ export function solveBoundedTarget(inputJoints, target, {
     position: target.position,
     rpy: flangeRpyFromToolTarget(target.rpy, toolOffsetRpy),
   };
+  const effectiveMode = lockOrientation ? 'pose' : mode;
+  const effectiveLength = lockPosition
+    ? Math.min(length, 0.35)
+    : (lockOrientation ? Math.max(length, 10) : length);
 
   let res = inverseKinematics(current, flangeTarget, {
-    mode,
-    length,
+    mode: effectiveMode,
+    length: effectiveLength,
     damping,
     maxIterations,
     maxSeeds: 1,
@@ -979,8 +1091,8 @@ export function solveBoundedTarget(inputJoints, target, {
         const sweptSeed = sweepJointsCollisionFree(current, nudged, toolType, environment);
         if (sweptSeed.blocked) continue;
         const attempt = inverseKinematics(sweptSeed.joints, flangeTarget, {
-          mode,
-          length,
+          mode: effectiveMode,
+          length: effectiveLength,
           damping,
           maxIterations,
           maxSeeds: 1,
@@ -996,18 +1108,170 @@ export function solveBoundedTarget(inputJoints, target, {
     }
   }
 
-  if (res.joints && validateJoints(res.joints).length === 0
-    && !detectSelfCollision(res.joints, null, toolType, environment).colliding) {
-    const normalized = normalizeJoints(res.joints).map(j => ({ ...j, speed: 0 }));
-    const solvedFk = forwardKinematics(normalized);
+  const isSafeCandidate = (candJoints) => candJoints
+    && validateJoints(candJoints).length === 0
+    && !detectSelfCollision(candJoints, null, toolType, environment).colliding;
+
+  let candidate = isSafeCandidate(res.joints)
+    ? normalizeJoints(res.joints).map(j => ({ ...j, speed: 0 }))
+    : null;
+
+  if (lockOrientation) {
+    const qAnchor = new Quaternion().setFromRotationMatrix(rotationFromRPY(flangeTarget.rpy)).normalize();
+    const rotDriftRad = (candJoints) => {
+      const qCand = new Quaternion().setFromRotationMatrix(forwardKinematics(candJoints, { includeOrientation: false }).total).normalize();
+      return 2 * Math.acos(clamp(Math.abs(qAnchor.dot(qCand)), 0, 1));
+    };
+    const isOrientationOk = (candJoints) => candJoints
+      && isSafeCandidate(candJoints)
+      && rotDriftRad(candJoints) <= 1e-3
+      && !sweepJointsCollisionFree(current, candJoints, toolType, environment).blocked;
+
+    if (!candidate || !isOrientationOk(candidate)) {
+      let lo = 0;
+      let hi = 1;
+      let best = current;
+      const delta = [
+        target.position[0] - currentEnd[0],
+        target.position[1] - currentEnd[1],
+        target.position[2] - currentEnd[2],
+      ];
+      for (let stepIdx = 0; stepIdx < 7; stepIdx++) {
+        const mid = (lo + hi) / 2;
+        const midPos = [
+          currentEnd[0] + delta[0] * mid,
+          currentEnd[1] + delta[1] * mid,
+          currentEnd[2] + delta[2] * mid,
+        ];
+        const attempt = inverseKinematics(best, { position: midPos, rpy: flangeTarget.rpy }, {
+          mode: 'pose',
+          length: effectiveLength,
+          damping,
+          maxIterations: 35,
+          maxSeeds: 1,
+          toolType,
+          environment,
+        });
+        if (attempt.converged && isOrientationOk(attempt.joints)) {
+          best = normalizeJoints(attempt.joints).map(j => ({ ...j, speed: 0 }));
+          lo = mid;
+        } else {
+          hi = mid;
+        }
+      }
+
+      if (lo === 0) {
+        // Diagonal move blocked immediately; try sliding smoothly along each individual axis while keeping orientation fixed
+        let bestSlideDist = 0;
+        for (let axis = 0; axis < 3; axis++) {
+          if (Math.abs(delta[axis]) < 1e-6) continue;
+          let sLo = 0;
+          let sHi = 1;
+          let axisBest = current;
+          for (let stepIdx = 0; stepIdx < 5; stepIdx++) {
+            const mid = (sLo + sHi) / 2;
+            const slidePos = [
+              currentEnd[0] + (axis === 0 ? delta[0] * mid : 0),
+              currentEnd[1] + (axis === 1 ? delta[1] * mid : 0),
+              currentEnd[2] + (axis === 2 ? delta[2] * mid : 0),
+            ];
+            const attempt = inverseKinematics(axisBest, { position: slidePos, rpy: flangeTarget.rpy }, {
+              mode: 'pose',
+              length: effectiveLength,
+              damping,
+              maxIterations: 32,
+              maxSeeds: 1,
+              toolType,
+              environment,
+            });
+            if (attempt.converged && isOrientationOk(attempt.joints)) {
+              axisBest = normalizeJoints(attempt.joints).map(j => ({ ...j, speed: 0 }));
+              sLo = mid;
+            } else {
+              sHi = mid;
+            }
+          }
+          const moved = Math.abs(delta[axis] * sLo);
+          if (sLo > 0 && moved > bestSlideDist) {
+            bestSlideDist = moved;
+            best = axisBest;
+          }
+        }
+      }
+
+      if (best === current) {
+        return {
+          joints: current,
+          position: [...currentEnd],
+          rpy: [...target.rpy],
+          converged: false,
+          iterations: res.iterations,
+          error: res.error,
+          residual: res.residual,
+          blocked: true,
+        };
+      }
+      candidate = best;
+    }
+  }
+
+  if (candidate) {
+    if (lockPosition) {
+      let candPos = forwardKinematics(candidate, { includeOrientation: false }).positions.at(-1);
+      let drift = Math.hypot(
+        candPos[0] - target.position[0],
+        candPos[1] - target.position[1],
+        candPos[2] - target.position[2]
+      );
+      if (drift > 5e-5) {
+        const polish = inverseKinematics(candidate, flangeTarget, {
+          mode: 'position',
+          length: Math.max(1, length),
+          damping: Math.min(damping, 0.01),
+          maxIterations: 20,
+          maxSeeds: 1,
+          tolerance: 1e-6,
+          toolType,
+          environment,
+        });
+        if (isSafeCandidate(polish.joints)) {
+          const polishedNorm = normalizeJoints(polish.joints).map(j => ({ ...j, speed: 0 }));
+          const polishPos = forwardKinematics(polishedNorm, { includeOrientation: false }).positions.at(-1);
+          const polishDrift = Math.hypot(
+            polishPos[0] - target.position[0],
+            polishPos[1] - target.position[1],
+            polishPos[2] - target.position[2]
+          );
+          if (polishDrift < drift) {
+            candidate = polishedNorm;
+            candPos = polishPos;
+            drift = polishDrift;
+          }
+        }
+      }
+      if (drift > 1e-3 || sweepJointsCollisionFree(current, candidate, toolType, environment).blocked) {
+        return {
+          joints: current,
+          position: [...target.position],
+          rpy: [...currentTool.orientation.rpy],
+          converged: false,
+          iterations: res.iterations,
+          error: res.error,
+          residual: res.residual,
+          blocked: true,
+        };
+      }
+    }
+
+    const solvedFk = forwardKinematics(candidate);
     const rawPos = solvedFk.positions.at(-1);
-    const achievedPos = mode === 'xy' ? [rawPos[0], rawPos[1], currentEnd[2]] : rawPos;
+    const achievedPos = (!lockOrientation && mode === 'xy') ? [rawPos[0], rawPos[1], currentEnd[2]] : rawPos;
     const achievedTool = computeToolFrame(solvedFk.total, toolOffsetRpy, toolType);
     return {
-      joints: normalized,
+      joints: candidate,
       position: achievedPos,
       rpy: achievedTool.orientation.rpy,
-      converged: res.converged,
+      converged: lockOrientation ? true : res.converged,
       iterations: res.iterations,
       error: res.error,
       residual: res.residual,
@@ -1017,12 +1281,55 @@ export function solveBoundedTarget(inputJoints, target, {
 
   return {
     joints: current,
-    position: [...currentEnd],
-    rpy: [...currentTool.orientation.rpy],
+    position: [...(lockPosition ? target.position : currentEnd)],
+    rpy: [...(lockOrientation ? target.rpy : currentTool.orientation.rpy)],
     converged: false,
     iterations: res.iterations,
     error: res.error,
     residual: res.residual,
     blocked: true,
+  };
+}
+
+/**
+ * Computes the 3D translational manipulability ellipsoid (radii + SO(3) orientation)
+ * from the top 3 rows of the geometric Jacobian via SVD.
+ */
+export function computeManipulabilityEllipsoid(jacobian) {
+  if (!Array.isArray(jacobian) || jacobian.length < 3 || !Array.isArray(jacobian[0]) || jacobian[0].length === 0) {
+    return null;
+  }
+  const cols = jacobian[0].length;
+  const paddedCols = Math.max(3, cols);
+  const jv = [0, 1, 2].map(r => {
+    const row = Array.isArray(jacobian[r]) ? jacobian[r] : [];
+    const out = new Array(paddedCols).fill(0);
+    for (let c = 0; c < cols; c++) {
+      const val = row[c];
+      out[c] = Number.isFinite(val) ? val : 0;
+    }
+    return out;
+  });
+
+  const svd = new SingularValueDecomposition(new Matrix(jv), { autoTranspose: true });
+  const s = [svd.diagonal[0] ?? 0, svd.diagonal[1] ?? 0, svd.diagonal[2] ?? 0];
+  const U = svd.leftSingularVectors;
+  const sign = determinant(U) < 0 ? -1 : 1;
+
+  const rotMat = new Matrix4().set(
+    U.get(0, 0), U.get(0, 1), U.get(0, 2) * sign, 0,
+    U.get(1, 0), U.get(1, 1), U.get(1, 2) * sign, 0,
+    U.get(2, 0), U.get(2, 1), U.get(2, 2) * sign, 0,
+    0, 0, 0, 1
+  );
+  const q = new Quaternion().setFromRotationMatrix(rotMat).normalize();
+  const maxS = Math.max(s[0], 1e-6);
+  const radii = s.map(v => Math.max(0.04, Math.min(0.55, (v / maxS) * 0.42)));
+
+  return {
+    singularValues: s,
+    radii,
+    quaternion: [q.x, q.y, q.z, q.w],
+    manipulability: s[0] * s[1] * s[2],
   };
 }

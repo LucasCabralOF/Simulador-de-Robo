@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
-import { DEG } from './kinematics';
+import { DEG, resolveJointChartColor } from './kinematics';
 import { SegmentedTabs } from './ui';
 
 const VIEWBOX_WIDTH = 420;
@@ -10,17 +10,6 @@ const PAD_TOP = 18;
 const PAD_BOTTOM = 26;
 const PLOT_WIDTH = VIEWBOX_WIDTH - PAD_LEFT - PAD_RIGHT;
 const PLOT_HEIGHT = VIEWBOX_HEIGHT - PAD_TOP - PAD_BOTTOM;
-
-const JOINT_COLORS = [
-  '#62d5b5',
-  '#4da6ff',
-  '#f3b74f',
-  '#f17d8b',
-  '#b59cff',
-  '#ff9868',
-  '#7cd96e',
-  '#e58fd8',
-];
 
 const METRIC_TABS = [
   { id: 'q', label: 'Posição q(t)' },
@@ -87,6 +76,8 @@ function buildPolylinePath(times, values, xOf, yOf) {
 
 export default function TrajectoryCharts({
   trajectoryData,
+  joints = [],
+  modelStyle = null,
   playTime = 0,
   interpType = 'quintic',
   angleUnit = 'deg',
@@ -168,10 +159,10 @@ export default function TrajectoryCharts({
         key: `j-${jp.index}`,
         label: jp.label,
         type: jp.type,
-        color: JOINT_COLORS[jp.index % JOINT_COLORS.length],
+        color: resolveJointChartColor(modelStyle, joints[jp.index] || { id: jp.index + 1, type: jp.type }, jp.index),
         values: jp[metric] || [],
       }));
-  }, [hasData, metric, tcpSpeeds, scaledProfiles, hiddenJoints]);
+  }, [hasData, metric, tcpSpeeds, scaledProfiles, hiddenJoints, modelStyle, joints]);
 
   const { yMin, yMax, yTicks } = useMemo(() => {
     let lo = Infinity;
@@ -399,7 +390,7 @@ export default function TrajectoryCharts({
       ) : (
         <div className="chart-legend" aria-label="Legenda e filtro das juntas">
           {scaledProfiles.map(jp => {
-            const color = JOINT_COLORS[jp.index % JOINT_COLORS.length];
+            const color = resolveJointChartColor(modelStyle, joints[jp.index] || { id: jp.index + 1, type: jp.type }, jp.index);
             const hidden = hiddenJoints.includes(jp.index);
             const currentVal = interpolateSeriesAtTime(times, jp[metric], clampedTime);
             return (

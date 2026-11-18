@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Matrix4 } from 'three';
-import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_JOINTS, DEFAULT_MODEL_STYLE, LINK_SHAPES, TOOL_LIST, TOOL_TYPES, computeToolFrame, detectSelfCollision, dhMatrix, flangeRpyFromToolTarget, forwardKinematics, integrateJoints, inverseKinematics, inverseVelocity, isDefaultModelStyle, jacobianDiagnostics, matrixRows, multiplyVector, normalizeJoints, normalizeModelStyle, orientation, resolveJointModelStyle, rotationFromRPY, solveBoundedTarget, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from '../src/kinematics.js';
+import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_JOINTS, DEFAULT_JOINT_COLORS, DEFAULT_MODEL_STYLE, JOINT_CHART_PALETTE, LINK_SHAPES, TOOL_LIST, TOOL_TYPES, computeManipulabilityEllipsoid, computeToolFrame, detectSelfCollision, dhMatrix, flangeRpyFromToolTarget, forwardKinematics, hexToHsl, hslToHex, integrateJoints, inverseKinematics, inverseVelocity, isDefaultModelStyle, jacobianDiagnostics, matrixRows, multiplyVector, normalizeJoints, normalizeModelStyle, orientation, resolveJointChartColor, resolveJointModelStyle, rotationFromRPY, solveBoundedTarget, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from '../src/kinematics.js';
 import { PRESET_LIST } from '../src/presets.js';
 
 const near = (actual, expected, tolerance = 1e-8) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
@@ -347,9 +347,53 @@ test('solveBoundedTarget clamps gizmo drags strictly within joint, workspace, si
   const rotRoll = solveBoundedTarget(DEFAULT_JOINTS, { position: forwardKinematics(DEFAULT_JOINTS).positions.at(-1), rpy: [45, 0, 75] }, {
     mode: 'pose',
     toolOffsetRpy: [0, 0, 0],
+    lockPosition: true,
   });
   near(rotRoll.rpy[0], 0, 1e-4);
   near(rotRoll.rpy[1], 0, 1e-4);
+
+  // 6. Continuous multi-frame RPY orientation drag keeps end-effector XYZ position strictly locked
+  const ur5 = PRESET_LIST.find(p => p.id === 'ur5');
+  let dragJoints = ur5.joints;
+  const anchorPos = forwardKinematics(dragJoints).positions.at(-1);
+  for (let stepIdx = 1; stepIdx <= 25; stepIdx++) {
+    const res = solveBoundedTarget(
+      dragJoints,
+      { position: anchorPos, rpy: [90 + stepIdx * 4, stepIdx * 2, -135 + stepIdx * 3] },
+      { mode: 'pose', toolOffsetRpy: ur5.toolOffsetRpy, lockPosition: true }
+    );
+    assert.equal(res.blocked, false);
+    dragJoints = res.joints;
+    const stepPos = forwardKinematics(dragJoints).positions.at(-1);
+    nearVector(stepPos, anchorPos, 1e-4);
+  }
+
+  // 7. Continuous multi-frame XYZ translation drag keeps end-effector RPY orientation strictly locked
+  let transJoints = ur5.joints;
+  const anchorRpy = computeToolFrame(forwardKinematics(transJoints).total, ur5.toolOffsetRpy).orientation.rpy;
+  for (let stepIdx = 1; stepIdx <= 20; stepIdx++) {
+    const curPos = forwardKinematics(transJoints).positions.at(-1);
+    const res = solveBoundedTarget(
+      transJoints,
+      { position: [curPos[0] - 0.3, curPos[1] + 0.2, curPos[2] - 0.1], rpy: anchorRpy },
+      { mode: 'position', toolOffsetRpy: ur5.toolOffsetRpy, lockOrientation: true }
+    );
+    if (!res.blocked) transJoints = res.joints;
+    const stepToolRpy = computeToolFrame(forwardKinematics(transJoints).total, ur5.toolOffsetRpy).orientation.rpy;
+    nearVector(stepToolRpy, anchorRpy, 0.05);
+  }
+  const scaraStart = forwardKinematics(scara.joints);
+  const scaraPos0 = scaraStart.positions.at(-1);
+  const scaraRpy0 = computeToolFrame(scaraStart.total, scara.toolOffsetRpy).orientation.rpy;
+  const scaraTrans = solveBoundedTarget(
+    scara.joints,
+    { position: [scaraPos0[0] - 0.8, scaraPos0[1] + 0.6, scaraPos0[2] - 0.5], rpy: scaraRpy0 },
+    { mode: 'position', toolOffsetRpy: scara.toolOffsetRpy, lockOrientation: true }
+  );
+  assert.equal(scaraTrans.blocked, false);
+  const scaraEnd = forwardKinematics(scaraTrans.joints);
+  nearVector(scaraEnd.positions.at(-1), [scaraPos0[0] - 0.8, scaraPos0[1] + 0.6, scaraPos0[2] - 0.5], 1e-3);
+  nearVector(computeToolFrame(scaraEnd.total, scara.toolOffsetRpy).orientation.rpy, scaraRpy0, 0.05);
 });
 
 test('normalizeModelStyle clamps dimensions, validates link shapes, and tracks defaults', () => {
@@ -402,4 +446,81 @@ test('normalizeModelStyle clamps dimensions, validates link shapes, and tracks d
   const resolvedJ2 = resolveJointModelStyle(withPerJoint, 2);
   assert.equal(resolvedJ2.overridden, false);
   assert.equal(resolvedJ2.linkShape, 'hex');
+});
+
+test('custom joint and link colors normalize, resolve per-joint/global fallbacks, and synchronize chart palette', () => {
+  const defaultStyle = normalizeModelStyle({
+    ...DEFAULT_MODEL_STYLE,
+    revColor: DEFAULT_JOINT_COLORS.revColor,
+    prismColor: 'invalid',
+  });
+  assert.equal(isDefaultModelStyle(defaultStyle), true);
+  assert.equal(defaultStyle.revColor, undefined);
+  const s1Default = resolveJointModelStyle(defaultStyle, 1, 'R', 0);
+  const s2Default = resolveJointModelStyle(defaultStyle, 2, 'P', 1);
+  assert.equal(s1Default.jointColor, JOINT_CHART_PALETTE[0]);
+  assert.equal(s2Default.jointColor, JOINT_CHART_PALETTE[1]);
+  assert.equal(resolveJointChartColor(defaultStyle, { id: 1, type: 'R' }, 0), s1Default.jointColor);
+  assert.equal(resolveJointChartColor(defaultStyle, { id: 2, type: 'P' }, 1), s2Default.jointColor);
+
+  const colored = normalizeModelStyle({
+    ...DEFAULT_MODEL_STYLE,
+    revColor: '#FF5500',
+    linkColor: '#112233',
+    perJoint: {
+      2: { jointColor: '#AA33CC', linkColor: 'not-a-hex' },
+    },
+  });
+  assert.equal(isDefaultModelStyle(colored), false);
+  assert.equal(colored.revColor, '#ff5500');
+  assert.equal(colored.linkColor, '#112233');
+  assert.deepEqual(colored.perJoint, { 2: { jointColor: '#aa33cc' } });
+
+  const s1 = resolveJointModelStyle(colored, 1, 'R');
+  assert.equal(s1.jointColor, '#ff5500');
+  assert.equal(s1.linkColor, '#112233');
+  assert.equal(resolveJointChartColor(colored, { id: 1, type: 'R' }, 0), '#ff5500');
+
+  const s2 = resolveJointModelStyle(colored, 2, 'P');
+  assert.equal(s2.jointColor, '#aa33cc');
+  assert.equal(s2.prismColor, '#aa33cc');
+  assert.equal(s2.linkColor, '#112233');
+  assert.equal(resolveJointChartColor(colored, { id: 2, type: 'P' }, 1), '#aa33cc');
+
+  assert.equal(JOINT_CHART_PALETTE.length, 24);
+  assert.equal(hslToHex(0, 100, 50), '#ff0000');
+  assert.equal(hslToHex(120, 100, 50), '#00ff00');
+  assert.equal(hslToHex(240, 100, 50), '#0000ff');
+  assert.deepEqual(hexToHsl('#ff0000'), { h: 0, s: 100, l: 50 });
+  assert.deepEqual(hexToHsl('#808080'), { h: 0, s: 0, l: 50 });
+  const roundtrip = hexToHsl(hslToHex(210, 82, 62));
+  assert.ok(Math.abs(roundtrip.h - 210) <= 1);
+  assert.ok(Math.abs(roundtrip.s - 82) <= 2);
+  assert.ok(Math.abs(roundtrip.l - 62) <= 2);
+});
+
+test('computeManipulabilityEllipsoid yields valid SVD radii, unit quaternion, and detects planar flattening', () => {
+  assert.equal(computeManipulabilityEllipsoid(null), null);
+
+  // Planar RPR has zero velocity capability along Z (s3 ≈ 0)
+  const rprFk = forwardKinematics(DEFAULT_JOINTS);
+  const rprEll = computeManipulabilityEllipsoid(rprFk.jacobian);
+  assert.ok(rprEll);
+  assert.equal(rprEll.singularValues.length, 3);
+  assert.ok(rprEll.singularValues[0] >= rprEll.singularValues[1]);
+  assert.ok(rprEll.singularValues[1] >= rprEll.singularValues[2]);
+  near(rprEll.singularValues[2], 0, 1e-8);
+  near(rprEll.manipulability, 0, 1e-8);
+  assert.ok(rprEll.radii.every(r => r >= 0.04 && r <= 0.55));
+  const qNormRpr = Math.hypot(...rprEll.quaternion);
+  near(qNormRpr, 1, 1e-6);
+
+  // 6-DOF UR5 in a general pose has non-zero 3D manipulability volume
+  const ur5 = PRESET_LIST.find(p => p.id === 'ur5').joints;
+  const ur5Fk = forwardKinematics(ur5);
+  const ur5Ell = computeManipulabilityEllipsoid(ur5Fk.jacobian);
+  assert.ok(ur5Ell);
+  assert.ok(ur5Ell.singularValues[2] > 0.1);
+  assert.ok(ur5Ell.manipulability > 0.5);
+  near(Math.hypot(...ur5Ell.quaternion), 1, 1e-6);
 });

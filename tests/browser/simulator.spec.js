@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { Box3, PerspectiveCamera, Vector3 } from 'three';
-import { forwardKinematics } from '../../src/kinematics.js';
+import { forwardKinematics, hslToHex } from '../../src/kinematics.js';
 import { PRESETS } from '../../src/presets.js';
 
 async function number(page, label, value) {
@@ -201,7 +201,10 @@ async function motorPixels(page, joints, worldPoint) {
     gl.readPixels(x - radius, y - radius, width, width, gl.RGBA, gl.UNSIGNED_BYTE, data);
     let count = 0;
     for (let i = 0; i < data.length; i += 4) {
-      if (data[i] > 110 && data[i] > data[i + 1] * 1.25 && data[i + 2] > data[i + 1] * 1.05) count++;
+      const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+      const isPinkMotor = r > 110 && r > g * 1.25 && b > g * 1.05;
+      const isBlueMotor = b > 110 && b > g * 1.15 && b > r * 1.25;
+      if (isPinkMotor || isBlueMotor) count++;
     }
     return count;
   }, { x: projected.x, y: projected.y });
@@ -227,7 +230,9 @@ test('revolute motors remain anchored to their frame origins while DH pose and d
     await page.getByRole('button', { name: 'Modelo', exact: true }).click();
     await expect(page.getByRole('spinbutton', { name: 'd2', exact: true })).toHaveValue('2');
     await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+    await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
     await page.getByRole('checkbox', { name: 'Referenciais', exact: true }).uncheck();
+    await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
     for (const [d, angle] of [[2, -14.58], [-2, 40], [0, -20]]) {
       await number(page, 'd2', d);
       await number(page, 'q2 (°)', angle);
@@ -267,7 +272,9 @@ test('preset selection, 3D workspace calculation, and code export work seamlessl
   await page.getByRole('button', { name: 'Calcular alcance' }).click();
   await expect(page.getByRole('heading', { name: 'Estatísticas do Envelope' })).toBeVisible();
   await expect(page.locator('.readings')).toContainText('Volume envolvente');
-  await expect(page.getByRole('checkbox', { name: 'Nuvem 3D' })).toBeVisible();
+  await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
+  await expect(page.locator('.scene-layers-dropup').getByRole('checkbox', { name: 'Nuvem 3D' })).toBeVisible();
+  await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
 
   // Test Code Export tab (wider popover on desktop)
   await page.getByRole('button', { name: 'Código' }).click();
@@ -404,7 +411,8 @@ test('URDF export/import workflows and STL CAD tool attachments work properly', 
   await expect(page.locator('.notice[role="status"]')).toContainText('Robô importado via URDF');
   await expect(page.locator('.scene-brand')).toContainText('1 juntas');
 
-  // Verify STL CAD upload button exists in scene toolbar
+  // Verify STL CAD upload button exists inside Layers drop-up
+  await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
   await expect(page.locator('label[aria-label="Carregar malha STL"]')).toBeVisible();
 });
 
@@ -486,11 +494,33 @@ test('sliding UR5 target sliders to extremes keeps transverse fixed coordinates 
   await pickOption(page, 'Selecionar preset industrial', 'Universal Cobot UR5 (6R) (6 DOF)');
   await page.getByRole('button', { name: 'Inversa', exact: true }).click();
 
+  // Red singularity intervals & markers appear on Inversa Cartesian sliders & Pitch (±90° Gimbal Lock)
+  const singularityDots = page.locator('[data-panel-id="inverse"] [data-testid="slider-singularity-dot"]');
+  expect(await singularityDots.count()).toBeGreaterThanOrEqual(3);
+  const intervalBands = page.locator('[data-panel-id="inverse"] .ui-slider-singularity-dot.is-interval');
+  expect(await intervalBands.count()).toBeGreaterThanOrEqual(1);
+  await expect(page.locator('[data-panel-id="inverse"]')).toContainText('Sing. (Gimbal Lock): ±90°');
+
   const xInput = page.getByRole('spinbutton', { name: 'Alvo X (u)', exact: true });
   const yInput = page.getByRole('spinbutton', { name: 'Alvo Y (u)', exact: true });
   const zInput = page.getByRole('spinbutton', { name: 'Alvo Z (u)', exact: true });
   const xSlider = page.getByRole('slider', { name: 'Deslizar Alvo X (u)', exact: true });
   const zSlider = page.getByRole('slider', { name: 'Deslizar Alvo Z (u)', exact: true });
+
+  // Continuous pointer drag across Alvo X slider (including interior singular zone) must remain smooth and never snap back
+  await xSlider.scrollIntoViewIfNeeded();
+  const sliderBox = await xSlider.boundingBox();
+  if (sliderBox && sliderBox.width > 80) {
+    const midY = sliderBox.y + sliderBox.height / 2;
+    await page.mouse.move(sliderBox.x + sliderBox.width * 0.5, midY);
+    await page.mouse.down();
+    await page.mouse.move(sliderBox.x + sliderBox.width * 0.2, midY, { steps: 10 });
+    const leftVal = Number(await xInput.inputValue());
+    await page.mouse.move(sliderBox.x + sliderBox.width * 0.85, midY, { steps: 14 });
+    const rightVal = Number(await xInput.inputValue());
+    await page.mouse.up();
+    expect(rightVal).toBeGreaterThan(leftVal + 4.0);
+  }
 
   const initialY = await yInput.inputValue();
   const initialZ = await zInput.inputValue();
@@ -551,10 +581,38 @@ test('interactive 3D target gizmo toggles translate and rotate modes cleanly wit
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Inversa', exact: true }).click();
-
-  const sidebarGizmoToggle = page.getByRole('checkbox', { name: 'Gizmo 3D interativo', exact: true });
   const toolbarGizmoToggle = page.getByRole('checkbox', { name: 'Gizmo 3D', exact: true });
+  const toolbarGizmoModeBtn = page.getByRole('button', { name: 'Alternar modo do Gizmo 3D', exact: true });
+
+  // Available immediately outside Inverse tab cleanly from top CAD toolbar
+  await expect(toolbarGizmoToggle).toBeChecked();
+  await expect(toolbarGizmoModeBtn).toHaveText('XYZ');
+  const lockOriBtn = page.getByRole('button', { name: 'Travar orientação RPY ao mover XYZ', exact: true });
+  await expect(lockOriBtn).toHaveAttribute('aria-pressed', 'false');
+  await lockOriBtn.click();
+  await expect(lockOriBtn).toHaveAttribute('aria-pressed', 'true');
+  await lockOriBtn.click();
+
+  await toolbarGizmoModeBtn.click();
+  await expect(toolbarGizmoModeBtn).toHaveText('RPY');
+  const lockPosBtn = page.getByRole('button', { name: 'Travar posição XYZ ao girar RPY', exact: true });
+  await expect(lockPosBtn).toHaveAttribute('aria-pressed', 'true');
+  await lockPosBtn.click();
+  await expect(lockPosBtn).toHaveAttribute('aria-pressed', 'false');
+  await lockPosBtn.click();
+
+  await toolbarGizmoModeBtn.click();
+  await expect(toolbarGizmoModeBtn).toHaveText('XYZ');
+
+  const outsideInverseBefore = await pixels(page);
+  await toolbarGizmoToggle.uncheck();
+  await expect(toolbarGizmoModeBtn).toHaveCount(0);
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(outsideInverseBefore.checksum);
+  await toolbarGizmoToggle.check();
+  await expect(toolbarGizmoModeBtn).toHaveText('XYZ');
+
+  await page.getByRole('button', { name: 'Inversa', exact: true }).click();
+  const sidebarGizmoToggle = page.getByRole('checkbox', { name: 'Gizmo 3D interativo', exact: true });
   await expect(sidebarGizmoToggle).toBeChecked();
   await expect(toolbarGizmoToggle).toBeChecked();
   await expect(page.getByRole('button', { name: 'Mover no 3D (XYZ)', exact: true })).toHaveAttribute('aria-current', 'page');
@@ -568,6 +626,7 @@ test('interactive 3D target gizmo toggles translate and rotate modes cleanly wit
   await expect(toolbarGizmoToggle).toBeChecked();
   await page.getByRole('button', { name: 'Girar no 3D (RPY)', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Girar no 3D (RPY)', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(toolbarGizmoModeBtn).toHaveText('RPY');
   await expect(page.getByRole('combobox', { name: 'Tarefa', exact: true })).toContainText('Pose XYZ + orientação');
 
   // Collapsing Inversa drawer preserves active IK context & 3D Gizmo on canvas
@@ -591,7 +650,9 @@ test('environment collision detects elevated workbench floor and blocks motion t
 
   // Position a 1.0u sphere obstacle ahead along the RPR sweep path at [4, 3, 0]
   await page.getByRole('button', { name: 'Posicionar à frente do efetuador', exact: true }).click();
-  await expect(page.locator('.scene-toolbar').getByRole('checkbox', { name: 'Obstáculo 3D', exact: true })).toBeChecked();
+  await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
+  await expect(page.locator('.scene-layers-dropup').getByRole('checkbox', { name: 'Obstáculo 3D', exact: true })).toBeChecked();
+  await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
   const obsGizmoToggle = page.getByRole('checkbox', { name: 'Mover obstáculo no 3D (Gizmo)', exact: true });
   await expect(obsGizmoToggle).toBeChecked();
   await obsGizmoToggle.uncheck();
@@ -628,6 +689,10 @@ test('tool configuration (TCP) synchronizes across exported code, URDF, report s
   await page.goto('/');
   await page.getByRole('button', { name: /Ferramenta/i }).click();
   await page.getByRole('button', { name: 'Tocha de Solda', exact: true }).click();
+  await number(page, 'Volume da ferramenta (escala)', 2.2);
+  await page.getByRole('slider', { name: 'Deslizar Offset Yaw (°)', exact: true }).fill('30');
+  await expect(page.getByRole('spinbutton', { name: 'Offset Yaw (°)', exact: true })).toHaveValue('30');
+  await page.getByRole('slider', { name: 'Deslizar Offset Yaw (°)', exact: true }).fill('0');
   await number(page, 'Offset Pitch (°)', -45);
 
   await page.getByRole('button', { name: 'Projetos', exact: true }).click();
@@ -659,6 +724,7 @@ test('tool configuration (TCP) synchronizes across exported code, URDF, report s
   await expect(page.locator('.scene-readout')).toContainText('Tocha de Solda');
 
   await page.getByRole('button', { name: /Ferramenta/i }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Volume da ferramenta (escala)', exact: true })).toHaveValue('2.2');
   await expect(page.getByRole('spinbutton', { name: 'Offset Pitch (°)', exact: true })).toHaveValue('-45');
 
   await page.getByRole('button', { name: 'Projetos', exact: true }).click();
@@ -806,4 +872,208 @@ test('custom 3D robot modeling (per-link, per-axis, and global sizes) updates We
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: `Apagar ${simName}`, exact: true }).click();
 });
+
+test('CAD viewport shortcuts: +Ponto, Undo/Redo, camera views, ellipsoid/ghost layers, and JSON export/import', async ({ page }, info) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  await page.goto('/');
+  await expect(page.locator('.scene-brand')).toBeVisible();
+  await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+  await expect.poll(async () => (await pixels(page)).pink).toBeGreaterThan(10);
+
+  // 1. + Ponto & Rodar/Pausar directly from bottom viewport dock with all drawers closed
+  await page.getByRole('button', { name: 'Gravar ponto atual', exact: true }).click();
+  await expect(page.locator('.notice[role="status"]')).toContainText('salvo na trajetória');
+  await page.getByRole('button', { name: 'Trajetória', exact: true }).click();
+  await expect(page.locator('.waypoint-item')).toHaveCount(4);
+  await page.getByRole('button', { name: 'Fechar painel', exact: true }).click();
+
+  const beforePlay = await pixels(page);
+  await page.getByRole('button', { name: 'Executar animação 3D', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Pausar animação 3D', exact: true })).toBeVisible();
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(beforePlay.checksum);
+  await page.getByRole('button', { name: 'Pausar animação 3D', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Executar animação 3D', exact: true })).toBeVisible();
+
+  // 2. Undo / Redo via top bar buttons
+  const undoBtn = page.getByRole('button', { name: 'Desfazer', exact: true });
+  const redoBtn = page.getByRole('button', { name: 'Refazer', exact: true });
+  await expect(undoBtn).toBeEnabled();
+
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  const q1Input = page.getByRole('spinbutton', { name: 'q1 (°)', exact: true });
+  const q1BeforeEdit = await q1Input.inputValue();
+  await number(page, 'q1 (°)', 42);
+  await expect(q1Input).toHaveValue('42');
+  await undoBtn.click();
+  await expect(page.locator('.notice[role="status"]')).toContainText('Alteração desfeita.');
+  await expect(q1Input).toHaveValue(q1BeforeEdit);
+  await redoBtn.click();
+  await expect(page.locator('.notice[role="status"]')).toContainText('Alteração refeita.');
+  await expect(q1Input).toHaveValue('42');
+  await page.getByRole('button', { name: 'Fechar painel', exact: true }).click();
+
+  // 3. CAD camera presets (XY, XZ, YZ, 3D) and 3D layers (Elipsoide 3D, Pose Fantasma)
+  await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
+  const basePixels = await pixels(page);
+  await page.getByRole('button', { name: 'Vista superior XY', exact: true }).click();
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(basePixels.checksum);
+  const topPixels = await pixels(page);
+  await page.getByRole('button', { name: 'Vista frontal XZ', exact: true }).click();
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(topPixels.checksum);
+  await page.getByRole('button', { name: 'Vista lateral YZ', exact: true }).click();
+  await page.getByRole('button', { name: 'Vista 3D isométrica', exact: true }).click();
+
+  const beforeOverlay = await pixels(page);
+  await page.locator('.scene-layers-dropup').getByRole('checkbox', { name: 'Elipsoide 3D', exact: true }).check();
+  await page.locator('.scene-layers-dropup').getByRole('checkbox', { name: 'Pose Fantasma', exact: true }).check();
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(beforeOverlay.checksum);
+  await page.getByRole('button', { name: 'Camadas da cena', exact: true }).click();
+
+  // 4. JSON project export and import
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'Exportar projeto JSON', exact: true }).click(),
+  ]);
+  const jsonPath = info.outputPath('exported-project.json');
+  await download.saveAs(jsonPath);
+  await expect(page.locator('.notice[role="status"]')).toContainText('Projeto JSON exportado');
+
+  await page.getByRole('button', { name: 'Restaurar Cobot UR5 padrão', exact: true }).click();
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'q1 (°)', exact: true })).toHaveValue('0');
+
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  await page.getByLabel('Upload de projeto JSON', { exact: true }).setInputFiles(jsonPath);
+  await expect(page.locator('.notice[role="status"]')).toContainText('importado com sucesso');
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'q1 (°)', exact: true })).toHaveValue('42');
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('custom joint colors in Modelagem 3D synchronize with Trajectory charts and actuator indicators', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  await page.goto('/');
+  await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+  await expect.poll(async () => (await pixels(page)).pink).toBeGreaterThan(10);
+
+  const initialPixels = await pixels(page);
+  await page.getByRole('button', { name: /Modelagem 3D/i }).click();
+  await pickOption(page, 'Alvo da personalização 3D', 'Eixo / Ligação 1 (R)');
+
+  const jointColorInput = page.getByLabel('Cor da junta', { exact: true });
+  await jointColorInput.fill('#ff5500');
+  await expect(jointColorInput).toHaveValue('#ff5500');
+  await expect.poll(async () => (await pixels(page)).checksum).not.toBe(initialPixels.checksum);
+
+  // Modelo tab dot mirrors custom color
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  const j1Dot = page.locator('.actuator').first().locator('.joint-color-dot');
+  await expect(j1Dot).toHaveCSS('background-color', 'rgb(255, 85, 0)');
+
+  // Trajetória chart defaults J1 (#e65c93) matching 3D robot out of the box, and mirrors #ff5500 when customized
+  await page.getByRole('button', { name: 'Trajetória', exact: true }).click();
+  const j0Path = page.locator('[data-testid="trajectory-kinematic-chart"] path[data-series-key="j-0"]');
+  await expect(j0Path).toHaveAttribute('stroke', '#ff5500');
+  const firstChipSwatch = page.locator('.chart-legend-chip .chart-swatch').first();
+  await expect(firstChipSwatch).toHaveCSS('background-color', 'rgb(255, 85, 0)');
+
+  // One-click palette assignment colors J1..J6 consistently across 3D and chart
+  await page.getByRole('button', { name: /Modelagem 3D/i }).click();
+  await page.getByRole('button', { name: 'Colorir juntas pela paleta do gráfico', exact: true }).click();
+  await page.getByRole('button', { name: 'Trajetória', exact: true }).click();
+  await expect(j0Path).toHaveAttribute('stroke', '#e65c93');
+  await expect(page.locator('[data-testid="trajectory-kinematic-chart"] path[data-series-key="j-1"]')).toHaveAttribute('stroke', '#4da6ff');
+
+  // Restoring modeling resets 3D defaults and keeps J1 chart matching 3D (#e65c93)
+  await page.getByRole('button', { name: /Modelagem 3D/i }).click();
+
+  // Direct #HEX input, Hue rainbow slider, and expanded 24-color / 360-deg rainbow controls
+  await pickOption(page, 'Alvo da personalização 3D', 'Eixo / Ligação 1 (R) · Personalizado');
+  const hexInput = page.getByLabel('Código hexadecimal da cor', { exact: true });
+  await hexInput.fill('#18b4f0');
+  await expect(jointColorInput).toHaveValue('#18b4f0');
+
+  const hueSlider = page.getByRole('slider', { name: 'Matiz da cor (0 a 360 graus)', exact: true });
+  await hueSlider.fill('120');
+  await expect(hexInput).not.toHaveValue('#18b4f0');
+
+  await page.getByRole('button', { name: 'Expandir seletor avançado de cores', exact: true }).click();
+  await expect(page.getByRole('slider', { name: 'Saturação da cor', exact: true })).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Luminosidade da cor', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Distribuir arco-íris nas juntas', exact: true }).click();
+  await page.getByRole('button', { name: 'Trajetória', exact: true }).click();
+  await expect(j0Path).toHaveAttribute('stroke', hslToHex(0, 82, 62));
+  await expect(page.locator('[data-testid="trajectory-kinematic-chart"] path[data-series-key="j-1"]')).toHaveAttribute('stroke', hslToHex(60, 82, 62));
+
+  await page.getByRole('button', { name: /Modelagem 3D/i }).click();
+  await page.getByRole('button', { name: 'Restaurar modelagem padrão', exact: true }).click();
+  await expect.poll(async () => (await pixels(page)).pink).toBeGreaterThan(10);
+  await page.getByRole('button', { name: 'Trajetória', exact: true }).click();
+  await expect(j0Path).toHaveAttribute('stroke', '#e65c93');
+
+  expect(errors).toEqual([]);
+});
+
+test('multiple floating panels can be pinned or Ctrl-clicked simultaneously with side-by-side placement, live updates, and minimize', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  await page.goto('/');
+  await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+
+  // 1. Open Modelo and pin it
+  await page.getByRole('button', { name: 'Modelo', exact: true }).click();
+  const modelPopover = page.locator('.scene-popover[data-panel-id="model"]');
+  await expect(modelPopover).toBeVisible();
+  await modelPopover.getByRole('button', { name: 'Manter janela aberta', exact: true }).click();
+
+  // 2. Normal click on Direta keeps pinned Modelo open and places Direta on the right on desktop
+  await page.getByRole('button', { name: 'Direta', exact: true }).click();
+  const forwardPopover = page.locator('.scene-popover[data-panel-id="forward"]');
+  await expect(forwardPopover).toBeVisible();
+  await expect(page.locator('.scene-popover')).toHaveCount(2);
+
+  const wsBox = await page.locator('.scene-workspace-row').boundingBox();
+  if (wsBox.width > 960) {
+    const modelBox = await modelPopover.boundingBox();
+    const forwardBox = await forwardPopover.boundingBox();
+    expect(forwardBox.x).toBeGreaterThan(modelBox.x + 150);
+  }
+
+  // 3. Editing q1 in Modelo updates Direta matrix live in parallel window
+  const beforeEnd = await page.getByTestId('end-position').textContent();
+  await number(page, 'q1 (°)', 30);
+  await expect(page.getByTestId('end-position')).not.toHaveText(beforeEnd);
+  await expect(forwardPopover).toContainText('Coordenadas globais (u)');
+
+  // 4. Ctrl+Click opens a 3rd window (Diferencial) without closing the existing two, and computes Jacobian live
+  await page.getByRole('button', { name: 'Diferencial', exact: true }).click({ modifiers: ['Control'] });
+  const diffPopover = page.locator('.scene-popover[data-panel-id="differential"]');
+  await expect(diffPopover).toBeVisible();
+  await expect(page.locator('.scene-popover')).toHaveCount(3);
+  await expect(diffPopover).toContainText('Condição normalizada');
+
+  // 5. Minimize Diferencial collapses its body without closing it
+  await diffPopover.getByRole('button', { name: 'Minimizar painel', exact: true }).click();
+  await expect(diffPopover.locator('.scene-popover-body')).toHaveCount(0);
+  await diffPopover.getByRole('button', { name: 'Fechar painel', exact: true }).click();
+  await expect(page.locator('.scene-popover')).toHaveCount(2);
+
+  // Escape closes only the focused panel, keeping mobile/desktop free of horizontal overflow
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.scene-popover')).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 
