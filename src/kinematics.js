@@ -1,5 +1,24 @@
 import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
 import { Matrix, SingularValueDecomposition, determinant } from 'ml-matrix';
+import {
+  ANALYTICAL_ARCH_LABELS,
+  POSTURE_AXES_BY_ARCH,
+  classifyPosture,
+  detectAnalyticalArchitecture,
+  formatPostureLabel,
+  generateAnalyticalCandidates,
+  jointDisplacementScore,
+  matchesPosturePreference,
+  maxRevoluteJumpDeg,
+} from './analyticalIk.js';
+
+export {
+  ANALYTICAL_ARCH_LABELS,
+  POSTURE_AXES_BY_ARCH,
+  classifyPosture,
+  detectAnalyticalArchitecture,
+  formatPostureLabel,
+};
 
 export const DEG = Math.PI / 180;
 export const DEFAULT_JOINTS = [
@@ -980,13 +999,257 @@ function solveConstrainedRates(joints, jacobian, error, options) {
   return rates;
 }
 
-export function inverseKinematics(input, target, { mode = 'position', length = 5, damping = 0.02, maxIterations = 160, tolerance = 1e-5, maxSeeds = 4, toolType = 'gripper', environment = null } = {}) {
+function normalizePosturePreference(posture) {
+  if (!posture || posture === 'auto' || typeof posture !== 'object') return null;
+  const entries = Object.entries(posture).filter(([, v]) => v && v !== 'auto');
+  return entries.length ? Object.fromEntries(entries) : null;
+}
+
+function isNearJointSingularity(joints, arch) {
+  if (!arch || !Array.isArray(joints)) return false;
+  if (arch === 'scara' && joints[1]) {
+    return Math.abs(Math.sin(joints[1].val * DEG)) < 0.08;
+  }
+  if ((arch === 'puma560' || arch === 'ur5') && joints[2] && joints[4]) {
+    return Math.abs(Math.sin(joints[2].val * DEG)) < 0.08
+      || Math.abs(Math.sin(joints[4].val * DEG)) < 0.08;
+  }
+  return false;
+}
+
+function evaluateAnalyticalBranches(initial, flangeTarget, {
+  solveMode = 'pose',
+  errorMode = solveMode,
+  length = 5,
+  tolerance = 1e-5,
+  toolType = 'gripper',
+  environment = null,
+} = {}) {
+  const candidates = generateAnalyticalCandidates(initial, flangeTarget, solveMode);
+  const evalRows = TASK_ROWS[errorMode] ?? 3;
+  const accepted = [];
+  for (const cand of candidates) {
+    if (validateJoints(cand.joints).length !== 0) continue;
+    if (detectSelfCollision(cand.joints, null, toolType, environment).colliding) continue;
+    const fk = forwardKinematics(cand.joints);
+    const residual = poseError(fk, flangeTarget);
+    const err = Math.hypot(...residual.slice(0, evalRows));
+    if (err > Math.max(tolerance * 10, 1e-3)) continue;
+    accepted.push({
+      id: cand.id,
+      joints: normalizeJoints(cand.joints).map(j => ({ ...j, speed: 0 })),
+      posture: cand.posture,
+      architecture: cand.architecture,
+      label: cand.label,
+      error: err,
+      residual,
+      converged: err <= Math.max(tolerance, 1e-4),
+      iterations: 0,
+      solver: 'analytical',
+      distance: jointDisplacementScore(cand.joints, initial, length),
+    });
+  }
+  accepted.sort((a, b) => a.distance - b.distance);
+  return accepted;
+}
+
+function collectFallbackPositionBranches(initial, flangeTarget, existingBranches, {
+  length = 5,
+  tolerance = 1e-5,
+  toolType = 'gripper',
+  environment = null,
+} = {}) {
+  const seenIds = new Set(existingBranches.map(b => b.id));
+  const pos = flangeTarget.position || [0, 0, 0];
+  const radialYaw = Math.atan2(pos[1], pos[0]) / DEG;
+  const extraRpys = [
+    [0, 0, radialYaw],
+    [180, 0, radialYaw],
+    [90, 0, radialYaw],
+    [-90, 0, radialYaw],
+    [0, 90, 0],
+    [0, -90, 0],
+    [0, 0, 0],
+    [180, 0, 0],
+  ];
+  const extras = [];
+  for (const rpy of extraRpys) {
+    const solved = evaluateAnalyticalBranches(initial, { position: pos, rpy }, {
+      solveMode: 'pose',
+      errorMode: 'position',
+      length,
+      tolerance,
+      toolType,
+      environment,
+    });
+    for (const branch of solved) {
+      if (seenIds.has(branch.id)) continue;
+      seenIds.add(branch.id);
+      extras.push({ ...branch, orientationAdjusted: true });
+    }
+  }
+  extras.sort((a, b) => a.distance - b.distance);
+  return extras;
+}
+
+export function listPostureBranches(input, target, {
+  mode = 'position',
+  length = 5,
+  tolerance = 1e-5,
+  toolType = 'gripper',
+  toolOffsetRpy = null,
+  environment = null,
+} = {}) {
+  const initial = normalizeJoints(input);
+  const architecture = detectAnalyticalArchitecture(initial);
+  if (!architecture || !target || !Array.isArray(target.position)) {
+    return { architecture: null, currentPosture: null, branches: [], axes: [] };
+  }
+  const currentPosture = classifyPosture(initial, architecture);
+  const flangeTarget = toolOffsetRpy
+    ? { ...target, rpy: flangeRpyFromToolTarget(target.rpy || [0, 0, 0], toolOffsetRpy) }
+    : target;
+
+  const primarySolveMode = architecture === 'scara' ? mode : 'pose';
+  const primaryBranches = evaluateAnalyticalBranches(initial, flangeTarget, {
+    solveMode: primarySolveMode,
+    errorMode: primarySolveMode,
+    length,
+    tolerance,
+    toolType,
+    environment,
+  }).map(b => ({ ...b, orientationAdjusted: false }));
+
+  let branches = primaryBranches;
+  if ((architecture === 'ur5' || architecture === 'puma560') && mode === 'position' && primaryBranches.length < 8) {
+    const fallbackExtras = collectFallbackPositionBranches(initial, flangeTarget, primaryBranches, {
+      length,
+      tolerance,
+      toolType,
+      environment,
+    });
+    branches = [...primaryBranches, ...fallbackExtras];
+  }
+
+  return {
+    architecture,
+    currentPosture,
+    axes: POSTURE_AXES_BY_ARCH[architecture] || [],
+    branches,
+  };
+}
+
+export function inverseKinematics(input, target, {
+  mode = 'position',
+  length = 5,
+  damping = 0.02,
+  maxIterations = 160,
+  tolerance = 1e-5,
+  maxSeeds = 4,
+  toolType = 'gripper',
+  environment = null,
+  posture = null,
+  strictPosture = null,
+  preferAnalytical = true,
+  continuityToleranceDeg = null,
+} = {}) {
   const initial = normalizeJoints(input);
   if (!target || target.position?.length !== 3 || target.rpy?.length !== 3 || ![...target.position, ...target.rpy].every(Number.isFinite)) throw new Error('Alvo inválido.');
   if (!TASK_ROWS[mode] || !Number.isFinite(length) || length <= 0 || !Number.isFinite(damping) || damping < 0 || !Number.isInteger(maxIterations) || maxIterations < 1 || !Number.isFinite(tolerance) || tolerance <= 0 || !Number.isInteger(maxSeeds) || maxSeeds < 1) throw new Error('Opções do solver inválidas.');
   const rows = TASK_ROWS[mode];
   const score = error => norm(rows.map(row => error[row] / (row < 3 ? length : 1)));
   let best = null;
+  const arch = preferAnalytical ? detectAnalyticalArchitecture(initial) : null;
+  const posturePref = normalizePosturePreference(posture);
+  const hasExplicitPosture = Boolean(posturePref);
+  const enforceStrict = strictPosture ?? hasExplicitPosture;
+  const initialNearSing = arch ? isNearJointSingularity(initial, arch) : false;
+
+  const filterContinuous = branches => {
+    if (!Number.isFinite(continuityToleranceDeg) || initialNearSing) return branches;
+    return branches.filter(b => maxRevoluteJumpDeg(initial, b.joints) <= continuityToleranceDeg);
+  };
+
+  if (arch) {
+    if (mode === 'pose' || arch === 'scara') {
+      const exactBranches = filterContinuous(evaluateAnalyticalBranches(initial, target, {
+        solveMode: mode,
+        errorMode: mode,
+        length,
+        tolerance,
+        toolType,
+        environment,
+      }));
+      if (hasExplicitPosture) {
+        const matching = exactBranches.filter(b => matchesPosturePreference(b.posture, posturePref));
+        if (matching.length > 0) {
+          return { ...matching[0], branches: exactBranches };
+        }
+        if (enforceStrict && exactBranches.length > 0) {
+          const curFk = forwardKinematics(initial);
+          const curRes = poseError(curFk, target);
+          return {
+            joints: initial,
+            error: score(curRes),
+            residual: curRes,
+            converged: false,
+            iterations: 0,
+            solver: 'analytical',
+            architecture: arch,
+            posture: classifyPosture(initial, arch),
+            branches: exactBranches,
+            postureUnavailable: true,
+          };
+        }
+      } else if (exactBranches.length > 0) {
+        return { ...exactBranches[0], branches: exactBranches };
+      }
+    } else if ((arch === 'ur5' || arch === 'puma560') && mode === 'position') {
+      const exactBranches = filterContinuous(evaluateAnalyticalBranches(initial, target, {
+        solveMode: 'pose',
+        errorMode: 'pose',
+        length,
+        tolerance,
+        toolType,
+        environment,
+      }));
+      if (hasExplicitPosture) {
+        let matching = exactBranches.filter(b => matchesPosturePreference(b.posture, posturePref));
+        let allBranches = exactBranches;
+        if (matching.length === 0) {
+          const extras = filterContinuous(collectFallbackPositionBranches(initial, target, exactBranches, {
+            length,
+            tolerance,
+            toolType,
+            environment,
+          }));
+          allBranches = [...exactBranches, ...extras];
+          matching = allBranches.filter(b => matchesPosturePreference(b.posture, posturePref));
+        }
+        if (matching.length > 0) {
+          return { ...matching[0], branches: allBranches };
+        }
+      } else if (exactBranches.length > 0 && (!Number.isFinite(continuityToleranceDeg) || maxSeeds > 1 || exactBranches[0].distance < 0.75)) {
+        return { ...exactBranches[0], branches: exactBranches };
+      }
+    }
+  }
+
+  const finalizeDlsResult = (resultObj) => {
+    const out = resultObj || { joints: initial, error: Infinity, residual: [Infinity, Infinity, Infinity, 0, 0, 0], converged: false };
+    const outPosture = arch ? classifyPosture(out.joints, arch) : null;
+    const postureOk = !hasExplicitPosture || !enforceStrict || !arch || matchesPosturePreference(outPosture, posturePref);
+    return {
+      ...out,
+      converged: Boolean(out.converged && postureOk),
+      iterations,
+      solver: 'dls',
+      architecture: arch,
+      posture: outPosture,
+      ...(postureOk ? {} : { postureUnavailable: true }),
+    };
+  };
+
   let iterations = 0;
   // Deterministic restarts allow escape from stationary seeds, including a straight arm.
   for (let seed = 0; seed < maxSeeds; seed++) {
@@ -1004,7 +1267,10 @@ export function inverseKinematics(input, target, { mode = 'position', length = 5
       const error = poseError(fk, target);
       const errorNorm = score(error);
       if (!best || errorNorm < best.error) best = { joints, error: errorNorm, residual: error, converged: errorNorm <= tolerance };
-      if (best.converged) return { ...best, iterations };
+      if (best.converged) {
+        const finalized = finalizeDlsResult(best);
+        if (finalized.converged) return finalized;
+      }
       const rates = solveConstrainedRates(joints, fk.jacobian, error, { mode, length, damping });
       if (rates.every(v => v === 0)) break;
       const largestStep = Math.max(...rates.map((v, i) => {
@@ -1027,17 +1293,17 @@ export function inverseKinematics(input, target, { mode = 'position', length = 5
         if (nextError < errorNorm - 1e-13) {
           joints = candidate; improved = true;
           if (nextError < best.error) best = { joints, error: nextError, residual: nextResidual, converged: nextError <= tolerance };
-          if (best.converged) return { ...best, iterations };
+          if (best.converged) {
+            const finalized = finalizeDlsResult(best);
+            if (finalized.converged) return finalized;
+          }
           break;
         }
       }
       if (!improved) break;
     }
   }
-  return {
-    ...(best || { joints: initial, error: Infinity, residual: [Infinity, Infinity, Infinity, 0, 0, 0], converged: false }),
-    iterations,
-  };
+  return finalizeDlsResult(best);
 }
 
 /**
@@ -1055,6 +1321,7 @@ export function solveBoundedTarget(inputJoints, target, {
   environment = null,
   lockPosition = false,
   lockOrientation = false,
+  posture = null,
 } = {}) {
   const current = normalizeJoints(inputJoints).map(j => ({ ...j, speed: 0 }));
   const currentFk = forwardKinematics(current);
@@ -1068,6 +1335,7 @@ export function solveBoundedTarget(inputJoints, target, {
   const effectiveLength = lockPosition
     ? Math.min(length, 0.35)
     : (lockOrientation ? Math.max(length, 10) : length);
+  const continuityToleranceDeg = (lockPosition || lockOrientation) ? 95 : null;
 
   let res = inverseKinematics(current, flangeTarget, {
     mode: effectiveMode,
@@ -1077,6 +1345,9 @@ export function solveBoundedTarget(inputJoints, target, {
     maxSeeds: 1,
     toolType,
     environment,
+    posture,
+    strictPosture: false,
+    continuityToleranceDeg,
   });
 
   // If warm-start made zero progress at a singular straight-arm interior pose, try a small local perturbation.
@@ -1276,6 +1547,9 @@ export function solveBoundedTarget(inputJoints, target, {
       error: res.error,
       residual: res.residual,
       blocked: false,
+      solver: res.solver || 'dls',
+      architecture: res.architecture || detectAnalyticalArchitecture(candidate),
+      posture: classifyPosture(candidate, res.architecture || detectAnalyticalArchitecture(candidate)),
     };
   }
 

@@ -494,12 +494,7 @@ test('sliding UR5 target sliders to extremes keeps transverse fixed coordinates 
   await pickOption(page, 'Selecionar preset industrial', 'Universal Cobot UR5 (6R) (6 DOF)');
   await page.getByRole('button', { name: 'Inversa', exact: true }).click();
 
-  // Red singularity intervals & markers appear on Inversa Cartesian sliders & Pitch (±90° Gimbal Lock)
-  const singularityDots = page.locator('[data-panel-id="inverse"] [data-testid="slider-singularity-dot"]');
-  expect(await singularityDots.count()).toBeGreaterThanOrEqual(3);
-  const intervalBands = page.locator('[data-panel-id="inverse"] .ui-slider-singularity-dot.is-interval');
-  expect(await intervalBands.count()).toBeGreaterThanOrEqual(1);
-  await expect(page.locator('[data-panel-id="inverse"]')).toContainText('Sing. (Gimbal Lock): ±90°');
+  await expect(page.locator('[data-panel-id="inverse"] [data-testid="slider-singularity-dot"]')).toHaveCount(0);
 
   const xInput = page.getByRole('spinbutton', { name: 'Alvo X (u)', exact: true });
   const yInput = page.getByRole('spinbutton', { name: 'Alvo Y (u)', exact: true });
@@ -1072,6 +1067,83 @@ test('multiple floating panels can be pinned or Ctrl-clicked simultaneously with
   // Escape closes only the focused panel, keeping mobile/desktop free of horizontal overflow
   await page.keyboard.press('Escape');
   await expect(page.locator('.scene-popover')).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('dedicated Singularidades tab displays Cartesian profiles, critical joint sweeps, and applies singular poses', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  await page.goto('/');
+  await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+
+  await page.getByRole('button', { name: 'Singularidades', exact: true }).click();
+  const singPopover = page.locator('.scene-popover[data-panel-id="singularities"]');
+  await expect(singPopover).toBeVisible();
+  await expect(singPopover).toContainText('Estado atual e Gimbal Lock');
+  await expect(singPopover).toContainText('Mapa por eixo cartesiano (X, Y, Z)');
+
+  expect(await singPopover.locator('.singularity-axis-svg').count()).toBeGreaterThanOrEqual(3);
+  expect(await singPopover.locator('.singularity-svg-band').count()).toBeGreaterThanOrEqual(1);
+  expect(await singPopover.locator('.singularity-pose-item').count()).toBeGreaterThanOrEqual(1);
+
+  const beforeEnd = await page.getByTestId('end-position').textContent();
+  await singPopover.getByRole('button', { name: 'Aplicar pose singular 1', exact: true }).click();
+  await expect(page.getByTestId('end-position')).not.toHaveText(beforeEnd);
+  await expect(page.locator('.notice[role="status"]')).toContainText('Pose singular 1 aplicada');
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('analytical IK posture selector switches UR5 and SCARA branches cleanly while preserving TCP target', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  await page.goto('/');
+  await expect(page.locator('canvas')).toHaveAttribute('data-engine', /three.js/);
+
+  await page.getByRole('button', { name: 'Inversa', exact: true }).click();
+  const ikPopover = page.locator('.scene-popover[data-panel-id="inverse"]');
+  await expect(ikPopover).toBeVisible();
+
+  const postureSection = ikPopover.locator('.posture-section');
+  await expect(postureSection).toContainText('Analítico · UR5 (6R)');
+  await expect(postureSection).toContainText('Ramos sem colisão para este alvo (8)');
+
+  const initialEnd = await page.getByTestId('end-position').textContent();
+  await postureSection.getByRole('group', { name: 'Selecionar Cotovelo', exact: true })
+    .getByRole('button', { name: 'Baixo', exact: true }).click();
+
+  await expect(ikPopover).toContainText('Analítico fechado (UR5 (6R))');
+  await expect(ikPopover).toContainText('Cotovelo: Baixo');
+  await expect(page.getByTestId('end-position')).toHaveText(initialEnd);
+
+  // Switch directly via a collision-free branch chip to Right shoulder + Up elbow + Inverted wrist
+  const targetChip = postureSection.locator('.posture-branch-chip', {
+    hasText: 'Ombro: Direito · Cotovelo: Cima · Punho: Invertido',
+  });
+  await targetChip.click();
+  await expect(targetChip).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('end-position')).toHaveText(initialEnd);
+
+  // Switch to SCARA (RRPR) and test both planar elbow posture branches
+  await page.getByRole('button', { name: 'Projetos', exact: true }).click();
+  await pickOption(page, 'Selecionar preset industrial', 'SCARA (RRPR) (4 DOF)');
+  await page.getByRole('button', { name: 'Inversa', exact: true }).click();
+  await expect(postureSection).toContainText('Analítico · SCARA (RRPR)');
+  await expect(postureSection).toContainText('Ramos sem colisão para este alvo (2)');
+
+  const scaraEnd = await page.getByTestId('end-position').textContent();
+  await postureSection.getByRole('group', { name: 'Selecionar Cotovelo', exact: true })
+    .getByRole('button', { name: 'Direita (-q₂)', exact: true }).click();
+  await expect(ikPopover).toContainText('Analítico fechado (SCARA (RRPR))');
+  await expect(ikPopover).toContainText('Cotovelo: Direita');
+  await expect(page.getByTestId('end-position')).toHaveText(scaraEnd);
+
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(errors).toEqual([]);
 });

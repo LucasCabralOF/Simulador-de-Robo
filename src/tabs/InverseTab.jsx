@@ -1,15 +1,16 @@
 import { memo } from 'react';
 import { Check, Crosshair, Focus, Pause, Play, Plus, Trash2 } from 'lucide-react';
 import { Button, Checkbox, MatrixView, Notice, SegmentedTabs, Slider } from '../ui';
-import { TOOL_LIST, TOOL_TYPES } from '../kinematics';
+import { ANALYTICAL_ARCH_LABELS, TOOL_LIST, TOOL_TYPES, formatPostureLabel } from '../kinematics';
 import { fmt, vectorText } from '../format';
 import EnvironmentSection from './EnvironmentSection';
 import TaskSettingsFields from './TaskSettingsFields';
 
-const PITCH_SINGULARITY_MARKERS = [
-  { value: -90, start: -93, end: -87, kind: 'interior', label: 'Singularidade RPY (Gimbal Lock): -90°' },
-  { value: 90, start: 87, end: 93, kind: 'interior', label: 'Singularidade RPY (Gimbal Lock): +90°' },
-];
+function posturesEqual(a, b) {
+  if (!a || !b) return false;
+  const keys = Object.keys(a);
+  return keys.length > 0 && keys.every(k => a[k] === b[k]);
+}
 
 const InverseTab = memo(function InverseTab({
   joints,
@@ -44,6 +45,10 @@ const InverseTab = memo(function InverseTab({
   setIkWaypointDuration,
   solution,
   setSolution,
+  posture,
+  postureInfo,
+  onSelectPosture,
+  onApplyBranch,
   message,
   solveInverse,
   changeTarget,
@@ -132,48 +137,12 @@ const InverseTab = memo(function InverseTab({
             const sliderMin = isFixed ? Number((lo - 1).toFixed(3)) : (roundedHi > roundedLo ? roundedLo : Number(lo.toFixed(3)));
             const sliderMax = isFixed ? Number((hi + 1).toFixed(3)) : (roundedHi > roundedLo ? roundedHi : Number(hi.toFixed(3)));
             const sliderVal = isFixed ? sliderMin : Math.max(sliderMin, Math.min(sliderMax, target.position[i]));
-            const axisSingularities = !isFixed
-              ? (cartesianBounds.singularities?.[i] || [])
-                  .filter(m => {
-                    const s = Number.isFinite(m.start) ? m.start : m.value;
-                    const e = Number.isFinite(m.end) ? m.end : m.value;
-                    return e >= lo - 0.05 && s <= hi + 0.05;
-                  })
-                  .map(m => {
-                    const s = Number.isFinite(m.start) ? Math.max(sliderMin, Math.min(sliderMax, m.start)) : Math.max(sliderMin, Math.min(sliderMax, m.value));
-                    const e = Number.isFinite(m.end) ? Math.max(sliderMin, Math.min(sliderMax, m.end)) : Math.max(sliderMin, Math.min(sliderMax, m.value));
-                    return {
-                      ...m,
-                      start: Math.min(s, e),
-                      end: Math.max(s, e),
-                      value: Math.max(sliderMin, Math.min(sliderMax, m.value)),
-                    };
-                  })
-              : [];
             return (
               <div className="ik-slider-card" key={axis}>
                 <div className="ik-slider-header">
                   <div className="ik-slider-meta">
                     <strong>Alvo {axis} (u)</strong>
-                    <span className="muted">
-                      Alcance: [{fmt(lo, 2)}, {fmt(hi, 2)}] u
-                      {axisSingularities.length > 0 && (
-                        <>
-                          {' · '}
-                          <span
-                            className="ik-singularity-badge"
-                            title={axisSingularities.map(m => m.label).join(' · ')}
-                          >
-                            <span className="ik-singularity-legend-dot" aria-hidden="true" />
-                            Sing.: {axisSingularities.map(m => (
-                              Math.abs(m.end - m.start) >= 0.05
-                                ? `[${fmt(m.start, 1)}, ${fmt(m.end, 1)}]`
-                                : fmt(m.value, 2)
-                            )).join(', ')}
-                          </span>
-                        </>
-                      )}
-                    </span>
+                    <span className="muted">Alcance: [{fmt(lo, 2)}, {fmt(hi, 2)}] u</span>
                   </div>
                   {numeric(`Alvo ${axis} (u)`, target.position[i], v => changeTarget('position', i, v), { compact: true })}
                 </div>
@@ -183,7 +152,6 @@ const InverseTab = memo(function InverseTab({
                   min={sliderMin}
                   max={sliderMax}
                   disabled={isFixed}
-                  markers={axisSingularities}
                   value={sliderVal}
                   onPointerDown={onSliderDragStart}
                   onPointerUp={onSliderDragEnd}
@@ -216,24 +184,12 @@ const InverseTab = memo(function InverseTab({
         <div className="ik-slider-list">
           {['Roll', 'Pitch', 'Yaw'].map((axis, i) => {
             const sliderVal = Math.max(-180, Math.min(180, target.rpy[i]));
-            const rpyMarkers = i === 1 ? PITCH_SINGULARITY_MARKERS : undefined;
             return (
               <div className="ik-slider-card" key={axis}>
                 <div className="ik-slider-header">
                   <div className="ik-slider-meta">
                     <strong>{axis} alvo (°)</strong>
-                    <span className="muted">
-                      Alcance: [-180.00, 180.00] °
-                      {rpyMarkers && (
-                        <>
-                          {' · '}
-                          <span className="ik-singularity-badge" title="Singularidade RPY (Gimbal Lock) em ±90°">
-                            <span className="ik-singularity-legend-dot" aria-hidden="true" />
-                            Sing. (Gimbal Lock): ±90°
-                          </span>
-                        </>
-                      )}
-                    </span>
+                    <span className="muted">Alcance: [-180.00, 180.00] °</span>
                   </div>
                   {numeric(`${axis} alvo (°)`, target.rpy[i], v => changeTarget('rpy', i, v), { compact: true })}
                 </div>
@@ -242,7 +198,6 @@ const InverseTab = memo(function InverseTab({
                   ariaValueText={`${fmt(sliderVal, 1)} °`}
                   min={-180}
                   max={180}
-                  markers={rpyMarkers}
                   value={sliderVal}
                   onPointerDown={onSliderDragStart}
                   onPointerUp={onSliderDragEnd}
@@ -274,6 +229,14 @@ const InverseTab = memo(function InverseTab({
             <span>Erro angular da ferramenta</span>
             <output>{fmt(toolAngularErrorDeg, 2)} °</output>
           </div>
+          <div className="ik-summary-row">
+            <span>Postura atual</span>
+            <output>
+              {postureInfo?.architecture
+                ? (formatPostureLabel(postureInfo.architecture, postureInfo.currentPosture) || 'Indefinida')
+                : 'Genérica (DLS)'}
+            </output>
+          </div>
         </div>
         <Checkbox checked={autoSolveIk} onChange={checked => {
           setAutoSolveIk(checked);
@@ -295,6 +258,105 @@ const InverseTab = memo(function InverseTab({
             <Plus size={16} />Salvar ponto na trajetória
           </Button>
         </div>
+      </section>
+
+      <section className="posture-section" aria-label="Postura cinemática e ramos analíticos">
+        <div className="posture-header">
+          <h2>Postura cinemática (IK Analítica)</h2>
+          <span className={`posture-solver-badge${postureInfo?.architecture ? ' is-analytical' : ''}`}>
+            {postureInfo?.architecture
+              ? `Analítico · ${ANALYTICAL_ARCH_LABELS[postureInfo.architecture] || postureInfo.architecture}`
+              : 'Numérico DLS'}
+          </span>
+        </div>
+        {postureInfo?.architecture ? (
+          <>
+            <div className="posture-mode-row">
+              <Button
+                variant={posture === 'auto' ? 'primary' : 'default'}
+                aria-pressed={posture === 'auto'}
+                onClick={() => onSelectPosture('auto')}
+              >
+                Automático (menor salto)
+              </Button>
+              <Button
+                disabled={!postureInfo.currentPosture}
+                onClick={() => postureInfo.currentPosture && onSelectPosture(postureInfo.currentPosture)}
+              >
+                Igualar à atual
+              </Button>
+            </div>
+            <div className="posture-axes-grid">
+              {postureInfo.axes.map(axis => {
+                const selectedVal = posture && typeof posture === 'object' ? posture[axis.key] : undefined;
+                return (
+                  <div className="posture-axis-row" key={axis.key}>
+                    <span className="posture-axis-label">{axis.label}</span>
+                    <div className="posture-axis-buttons" role="group" aria-label={`Selecionar ${axis.label}`}>
+                      {axis.options.map(opt => {
+                        const active = selectedVal === opt.value;
+                        return (
+                          <Button
+                            key={opt.value}
+                            variant={active ? 'primary' : 'default'}
+                            aria-pressed={active}
+                            onClick={() => {
+                              const prevObj = posture && typeof posture === 'object' ? { ...posture } : {};
+                              if (active) {
+                                delete prevObj[axis.key];
+                              } else {
+                                prevObj[axis.key] = opt.value;
+                              }
+                              const nextPref = Object.keys(prevObj).length > 0 ? prevObj : 'auto';
+                              onSelectPosture(nextPref);
+                            }}
+                          >
+                            {opt.label}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="posture-branches-header">
+              <span>Ramos sem colisão para este alvo ({postureInfo.branches.length})</span>
+            </div>
+            {postureInfo.branches.length > 0 ? (
+              <div className="posture-branch-list" role="group" aria-label="Ramos válidos para o alvo">
+                {postureInfo.branches.map(branch => {
+                  const isCurrent = posturesEqual(branch.posture, postureInfo.currentPosture);
+                  return (
+                    <button
+                      key={branch.id}
+                      type="button"
+                      className={`posture-branch-chip${isCurrent ? ' is-active' : ''}`}
+                      aria-pressed={Boolean(isCurrent)}
+                      onClick={() => onApplyBranch(branch)}
+                    >
+                      <span className="posture-branch-title">{branch.label}</span>
+                      <span className="posture-branch-meta">
+                        {branch.orientationAdjusted ? 'orientação adaptada · ' : ''}
+                        Δ {fmt(branch.distance, 2)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="muted">
+                {mode === 'pose'
+                  ? 'Nenhum ramo analítico exato atinge essa pose sem violar limites ou colisões. O botão Resolver usará aproximação numérica DLS.'
+                  : 'Nenhum ramo analítico exato atinge esse alvo sem violar limites ou colisões.'}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="muted">
+            Mecanismo genérico ativo: utilizando solver numérico DLS. O seletor fechado de ramos está disponível para SCARA (RRPR), PUMA 560 (6R) e UR5 (6R).
+          </p>
+        )}
       </section>
 
       <section>
@@ -352,9 +414,25 @@ const InverseTab = memo(function InverseTab({
         <section>
           <h2>Resultado</h2>
           <Notice as="p" variant={solution.converged ? 'success' : 'warning'} role={message ? undefined : 'status'}>
-            {solution.converged ? 'Solução convergiu dentro dos limites e foi aplicada ao manipulador.' : 'Não convergiu. Possíveis causas: alvo incompatível, limites ou mínimo local.'}
+            {solution.converged
+              ? 'Solução convergiu dentro dos limites e foi aplicada ao manipulador.'
+              : solution.postureUnavailable
+                ? 'Postura selecionada indisponível sem violar limites de junta ou colisão para este alvo.'
+                : 'Não convergiu. Possíveis causas: alvo incompatível, limites ou mínimo local.'}
           </Notice>
           <dl className="readings">
+            <dt>Método</dt>
+            <dd>
+              {solution.solver === 'analytical'
+                ? `Analítico fechado${solution.architecture ? ` (${ANALYTICAL_ARCH_LABELS[solution.architecture] || solution.architecture})` : ''}`
+                : 'Numérico DLS'}
+            </dd>
+            {solution.posture && solution.architecture && (
+              <>
+                <dt>Postura</dt>
+                <dd>{formatPostureLabel(solution.architecture, solution.posture)}</dd>
+              </>
+            )}
             <dt>Iterações totais</dt><dd>{solution.iterations}</dd>
             <dt>Resíduo normalizado</dt><dd>{fmt(solution.error, 7)}</dd>
             <dt>Erro de posição XYZ (u)</dt><dd>{vectorText(solution.residual.slice(0, 3))}</dd>

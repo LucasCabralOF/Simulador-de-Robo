@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Matrix4 } from 'three';
-import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_JOINTS, DEFAULT_JOINT_COLORS, DEFAULT_MODEL_STYLE, JOINT_CHART_PALETTE, LINK_SHAPES, TOOL_LIST, TOOL_TYPES, computeManipulabilityEllipsoid, computeToolFrame, detectSelfCollision, dhMatrix, flangeRpyFromToolTarget, forwardKinematics, hexToHsl, hslToHex, integrateJoints, inverseKinematics, inverseVelocity, isDefaultModelStyle, jacobianDiagnostics, matrixRows, multiplyVector, normalizeJoints, normalizeModelStyle, orientation, resolveJointChartColor, resolveJointModelStyle, rotationFromRPY, solveBoundedTarget, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from '../src/kinematics.js';
+import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_JOINTS, DEFAULT_JOINT_COLORS, DEFAULT_MODEL_STYLE, JOINT_CHART_PALETTE, LINK_SHAPES, TOOL_LIST, TOOL_TYPES, classifyPosture, computeManipulabilityEllipsoid, computeToolFrame, detectAnalyticalArchitecture, detectSelfCollision, dhMatrix, flangeRpyFromToolTarget, forwardKinematics, hexToHsl, hslToHex, integrateJoints, inverseKinematics, inverseVelocity, isDefaultModelStyle, jacobianDiagnostics, listPostureBranches, matrixRows, multiplyVector, normalizeJoints, normalizeModelStyle, orientation, resolveJointChartColor, resolveJointModelStyle, rotationFromRPY, solveBoundedTarget, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from '../src/kinematics.js';
 import { PRESET_LIST } from '../src/presets.js';
 
 const near = (actual, expected, tolerance = 1e-8) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
@@ -523,4 +523,97 @@ test('computeManipulabilityEllipsoid yields valid SVD radii, unit quaternion, an
   assert.ok(ur5Ell.singularValues[2] > 0.1);
   assert.ok(ur5Ell.manipulability > 0.5);
   near(Math.hypot(...ur5Ell.quaternion), 1, 1e-6);
+});
+
+test('analytical IK solves SCARA, PUMA 560, and UR5 branches with exact FK round-trip, posture selection, and collision filtering', () => {
+  const byId = id => PRESET_LIST.find(p => p.id === id);
+
+  assert.equal(detectAnalyticalArchitecture(DEFAULT_JOINTS), null);
+  assert.equal(detectAnalyticalArchitecture(byId('prp').joints), null);
+  assert.equal(detectAnalyticalArchitecture(byId('stanford').joints), null);
+  assert.equal(detectAnalyticalArchitecture(byId('scara').joints), 'scara');
+  assert.equal(detectAnalyticalArchitecture(byId('puma560').joints), 'puma560');
+  assert.equal(detectAnalyticalArchitecture(byId('ur5').joints), 'ur5');
+
+  // 1. UR5: all 8 analytical branches round-trip to machine precision
+  const ur5 = byId('ur5').joints;
+  const ur5Fk = forwardKinematics(ur5);
+  const ur5Target = { position: ur5Fk.positions.at(-1), rpy: ur5Fk.orientation.rpy };
+  const ur5Branches = listPostureBranches(ur5, ur5Target, { mode: 'pose' });
+  assert.equal(ur5Branches.architecture, 'ur5');
+  assert.equal(ur5Branches.branches.length, 8);
+  for (const branch of ur5Branches.branches) {
+    assert.equal(branch.solver, 'analytical');
+    assert.equal(branch.iterations, 0);
+    assert.equal(validateJoints(branch.joints).length, 0);
+    assert.equal(detectSelfCollision(branch.joints).colliding, false);
+    assert.deepEqual(classifyPosture(branch.joints, 'ur5'), branch.posture);
+    const checkFk = forwardKinematics(branch.joints);
+    nearVector(checkFk.positions.at(-1), ur5Target.position, 1e-6);
+    for (let k = 0; k < 16; k++) near(checkFk.total.elements[k], ur5Fk.total.elements[k], 1e-6);
+  }
+  const ur5AltPosture = { shoulder: 'right', elbow: 'down', wrist: 'down' };
+  const ur5Explicit = inverseKinematics(ur5, ur5Target, { mode: 'pose', posture: ur5AltPosture });
+  assert.equal(ur5Explicit.converged, true);
+  assert.equal(ur5Explicit.solver, 'analytical');
+  assert.equal(ur5Explicit.iterations, 0);
+  assert.deepEqual(ur5Explicit.posture, ur5AltPosture);
+  nearVector(forwardKinematics(ur5Explicit.joints).positions.at(-1), ur5Target.position, 1e-6);
+
+  // 2. PUMA 560: decoupled spherical wrist + offset d3 + joint limit wrapping
+  const puma = byId('puma560').joints.map((j, idx) => ({
+    ...j,
+    val: [-20, -40, 25, 15, 35, -30][idx],
+  }));
+  const pumaFk = forwardKinematics(puma);
+  const pumaTarget = { position: pumaFk.positions.at(-1), rpy: pumaFk.orientation.rpy };
+  const pumaBranches = listPostureBranches(puma, pumaTarget, { mode: 'pose' });
+  assert.equal(pumaBranches.architecture, 'puma560');
+  assert.ok(pumaBranches.branches.length >= 2);
+  for (const branch of pumaBranches.branches) {
+    assert.equal(branch.solver, 'analytical');
+    assert.equal(validateJoints(branch.joints).length, 0);
+    assert.equal(detectSelfCollision(branch.joints).colliding, false);
+    const checkFk = forwardKinematics(branch.joints);
+    nearVector(checkFk.positions.at(-1), pumaTarget.position, 1e-6);
+    for (let k = 0; k < 16; k++) near(checkFk.total.elements[k], pumaFk.total.elements[k], 1e-6);
+  }
+  const pickedPuma = pumaBranches.branches.at(-1);
+  const pumaExplicit = inverseKinematics(puma, pumaTarget, { mode: 'pose', posture: pickedPuma.posture });
+  assert.equal(pumaExplicit.converged, true);
+  assert.equal(pumaExplicit.solver, 'analytical');
+  assert.deepEqual(pumaExplicit.posture, pickedPuma.posture);
+
+  // 3. SCARA: both elbow branches solve XY / position / pose analytically and filter colliding branches
+  const scara = byId('scara').joints;
+  const scaraFk = forwardKinematics(scara);
+  const scaraTarget = { position: scaraFk.positions.at(-1), rpy: scaraFk.orientation.rpy };
+  const scaraBranches = listPostureBranches(scara, scaraTarget, { mode: 'position' });
+  assert.equal(scaraBranches.architecture, 'scara');
+  assert.equal(scaraBranches.branches.length, 2);
+
+  const rightBranch = scaraBranches.branches.find(b => b.posture.elbow === 'right');
+  const leftBranch = scaraBranches.branches.find(b => b.posture.elbow === 'left');
+  assert.ok(rightBranch && leftBranch);
+  nearVector(forwardKinematics(rightBranch.joints).positions.at(-1), scaraTarget.position, 1e-6);
+  nearVector(forwardKinematics(leftBranch.joints).positions.at(-1), scaraTarget.position, 1e-6);
+
+  // Place obstacle directly on the right-elbow intermediate joint position so only 'left' branch survives collision check
+  const rightElbowPos = forwardKinematics(rightBranch.joints).positions[1];
+  const obsEnv = {
+    ...DEFAULT_ENVIRONMENT,
+    obstacle: { enabled: true, shape: 'sphere', position: rightElbowPos, radius: 0.6 },
+  };
+  const filteredScara = listPostureBranches(scara, scaraTarget, { mode: 'position', environment: obsEnv });
+  assert.equal(filteredScara.branches.length, 1);
+  assert.equal(filteredScara.branches[0].posture.elbow, 'left');
+
+  const blockedStrict = inverseKinematics(scara, scaraTarget, {
+    mode: 'position',
+    environment: obsEnv,
+    posture: { elbow: 'right' },
+    strictPosture: true,
+  });
+  assert.equal(blockedStrict.converged, false);
+  assert.equal(blockedStrict.postureUnavailable, true);
 });

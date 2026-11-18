@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   Code2,
   Compass,
   Cpu,
@@ -32,6 +33,7 @@ const ANALYSIS_TABS = [
   { id: 'forward', label: 'Direta', title: 'Cinemática Direta', size: 'wide', icon: Compass },
   { id: 'differential', label: 'Diferencial', title: 'Cinemática Diferencial e Estática', size: 'wide', icon: Activity },
   { id: 'inverse', label: 'Inversa', title: 'Cinemática Inversa (IK)', size: 'medium', icon: Crosshair },
+  { id: 'singularities', label: 'Singularidades', title: 'Mapa e Análise de Singularidades', size: 'wide', icon: AlertTriangle },
   { id: 'trajectory', label: 'Trajetória', title: 'Planejamento de Trajetória', size: 'wide', icon: Route },
   { id: 'workspace', label: 'Alcance 3D', title: 'Espaço de Trabalho 3D', size: 'compact', icon: Orbit },
   { id: 'export', label: 'Código', title: 'Exportação de Código e URDF', size: 'wide', icon: Code2 },

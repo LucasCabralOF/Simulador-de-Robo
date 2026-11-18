@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import RobotScene from './RobotScene';
 import SceneToolbar from './SceneToolbar';
 import { NumberField } from './ui';
-import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_MODEL_STYLE, DEFAULT_TOOL_OFFSET_RPY, TOOL_TYPES, computeManipulabilityEllipsoid, computeToolFrame, detectSelfCollision, flangeRpyFromToolTarget, forwardKinematics, integrateJoints, inverseKinematics, inverseVelocity, jacobianDiagnostics, multiplyVector, normalizeJoints, normalizeModelStyle, rotationFromRPY, solveBoundedTarget, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from './kinematics';
+import { DEG, DEFAULT_ENVIRONMENT, DEFAULT_MODEL_STYLE, DEFAULT_TOOL_OFFSET_RPY, TOOL_TYPES, classifyPosture, computeManipulabilityEllipsoid, computeToolFrame, detectAnalyticalArchitecture, detectSelfCollision, flangeRpyFromToolTarget, forwardKinematics, integrateJoints, inverseKinematics, inverseVelocity, jacobianDiagnostics, listPostureBranches, multiplyVector, normalizeJoints, normalizeModelStyle, rotationFromRPY, solveBoundedTarget, staticJointEfforts, sweepJointsCollisionFree, validateJoints } from './kinematics';
 import { PRESETS } from './presets';
-import { computeCartesianBounds, generateWorkspaceCloud } from './workspace';
+import { analyzeRobotSingularities, computeCartesianBounds, generateWorkspaceCloud } from './workspace';
 import { generateCpp, generatePython, generateRos2 } from './codeGenerator';
 import { defaultWaypointsForJoints, evaluateTrajectory, sampleTrajectoryPath, syncWaypointsToJoints } from './trajectory';
 import { exportToURDF, parseURDF } from './urdfParser';
@@ -18,6 +18,7 @@ import ProjectsTab from './tabs/ProjectsTab';
 import ForwardTab from './tabs/ForwardTab';
 import DifferentialTab from './tabs/DifferentialTab';
 import InverseTab from './tabs/InverseTab';
+import SingularitiesTab from './tabs/SingularitiesTab';
 import TrajectoryTab from './tabs/TrajectoryTab';
 import WorkspaceTab from './tabs/WorkspaceTab';
 import ExportTab from './tabs/ExportTab';
@@ -47,6 +48,7 @@ function App() {
     activePanel,
     showInverse,
     showDifferential,
+    showSingularities,
     showReport,
     showExport,
     handleSelectTab,
@@ -69,6 +71,7 @@ function App() {
     rpy: [...INITIAL_TOOL_FRAME.orientation.rpy],
   }));
   const [solution, setSolution] = useState(null);
+  const [posture, setPosture] = useState('auto');
   const [autoSolveIk, setAutoSolveIk] = useState(false);
   const [ikWaypointDuration, setIkWaypointDuration] = useState(2.0);
   const [showFrames, setShowFrames] = useState(true);
@@ -153,6 +156,8 @@ function App() {
   const gizmoAnchorRpyRef = useRef(null);
   const shortcutsRef = useRef({ undo: () => {}, redo: () => {}, addWaypoint: () => {} });
   const lastCartesianBoundsRef = useRef(null);
+  const lastSingularityReportRef = useRef(null);
+  const lastPostureInfoRef = useRef(null);
   const multiSeedFailRef = useRef(null);
   const handleIkSliderDragStart = useCallback(() => {
     multiSeedFailRef.current = null;
@@ -195,9 +200,38 @@ function App() {
     return next;
   }, [isContinuousMotion, showInverse, joints, currentEnd, mode, environment, globalCartesianBounds]);
   const diagnostics = useMemo(
-    () => ((showDifferential || showReport) ? jacobianDiagnostics(joints, fk.jacobian, mode, length) : null),
-    [showDifferential, showReport, joints, fk, mode, length]
+    () => ((showDifferential || showReport || showSingularities) ? jacobianDiagnostics(joints, fk.jacobian, mode, length) : null),
+    [showDifferential, showReport, showSingularities, joints, fk, mode, length]
   );
+  const singularityReport = useMemo(() => {
+    if (!showSingularities) return null;
+    if (isContinuousMotion && lastSingularityReportRef.current) {
+      return lastSingularityReportRef.current;
+    }
+    const next = analyzeRobotSingularities(joints, { referencePos: currentEnd, mode, environment });
+    lastSingularityReportRef.current = next;
+    return next;
+  }, [isContinuousMotion, showSingularities, joints, currentEnd, mode, environment]);
+  const postureInfo = useMemo(() => {
+    if (!showInverse) return null;
+    if (isContinuousMotion && lastPostureInfoRef.current) {
+      const cached = lastPostureInfoRef.current;
+      const arch = cached.architecture || detectAnalyticalArchitecture(joints);
+      return {
+        ...cached,
+        currentPosture: arch ? classifyPosture(joints, arch) : null,
+      };
+    }
+    const next = listPostureBranches(joints, target, {
+      mode,
+      length,
+      toolType,
+      toolOffsetRpy,
+      environment,
+    });
+    lastPostureInfoRef.current = next;
+    return next;
+  }, [showInverse, isContinuousMotion, joints, target, mode, length, toolType, toolOffsetRpy, environment]);
   const velocity = useMemo(
     () => (showDifferential ? multiplyVector(fk.jacobian, joints.map(j => j.speed)) : null),
     [showDifferential, fk, joints]
@@ -346,7 +380,7 @@ function App() {
     });
   }
 
-  function solveInverse(targetToSolve = target, modeToUse = mode, jointsToUse = joints, maxIterations = undefined) {
+  function solveInverse(targetToSolve = target, modeToUse = mode, jointsToUse = joints, maxIterations = undefined, postureToUse = posture) {
     setIsPlaying(false);
     const adjustedTarget = {
       ...targetToSolve,
@@ -359,18 +393,55 @@ function App() {
       ...(maxIterations ? { maxIterations } : {}),
       toolType,
       environment,
+      posture: postureToUse,
     });
     if (res.converged && validateJoints(res.joints).length === 0) {
       const normalized = normalizeJoints(res.joints).map(j => ({ ...j, speed: 0 }));
+      jointsRef.current = normalized;
       setJoints(normalized);
       setSolution({ ...res, joints: normalized, applied: true });
       setCollisionAlert(null);
       setMessage('');
+      if (modeToUse !== 'pose' && (res.solver === 'dls' || res.orientationAdjusted)) {
+        const nextFk = forwardKinematics(normalized);
+        const nextTool = computeToolFrame(nextFk.total, toolOffsetRpy, toolType);
+        setTarget(prev => ({
+          ...prev,
+          rpy: nextTool.orientation.rpy.map(v => Math.round(v * 10) / 10),
+        }));
+      }
     } else {
       setSolution({ ...res, applied: false });
       setMessage('');
     }
     return res;
+  }
+
+  function selectPosture(nextPosture) {
+    setPosture(nextPosture);
+    solveInverse(target, mode, joints, undefined, nextPosture);
+  }
+
+  function applyPostureBranch(branch) {
+    if (!branch || !Array.isArray(branch.joints)) return;
+    if (validateJoints(branch.joints).length !== 0) return;
+    if (detectSelfCollision(branch.joints, null, toolType, environment).colliding) return;
+    setIsPlaying(false);
+    const normalized = normalizeJoints(branch.joints).map(j => ({ ...j, speed: 0 }));
+    jointsRef.current = normalized;
+    setJoints(normalized);
+    setPosture(branch.posture || 'auto');
+    setCollisionAlert(null);
+    setMessage('');
+    setSolution({ ...branch, joints: normalized, applied: true });
+    if (mode !== 'pose' && branch.orientationAdjusted) {
+      const nextFk = forwardKinematics(normalized);
+      const nextTool = computeToolFrame(nextFk.total, toolOffsetRpy, toolType);
+      setTarget(prev => ({
+        ...prev,
+        rpy: nextTool.orientation.rpy.map(v => Math.round(v * 10) / 10),
+      }));
+    }
   }
 
   function syncTargetAndModeForJoints(nextJoints, forceMode = null, customTool = null) {
@@ -528,6 +599,9 @@ function App() {
       maxSeeds: 1,
       toolType,
       environment,
+      posture,
+      strictPosture: false,
+      continuityToleranceDeg: 95,
     });
     if (!isValidSolved(res) && nextMode === 'pose' && !gizmoLockOrientation) {
       const posAttempt = inverseKinematics(activeJoints, flangeTarget, {
@@ -780,6 +854,7 @@ function App() {
     setModelTarget('global');
     setModelStyle(prev => normalizeModelStyle({ ...prev, perJoint: undefined }));
     syncTargetAndModeForJoints(p.joints, presetId === 'rpr' ? 'xy' : 'position', { toolOffsetRpy: presetOffset });
+    setPosture('auto');
     setViewKey(k => k + 1);
     setWorkspaceCloud(null);
     setIsPlaying(false);
@@ -953,6 +1028,26 @@ function App() {
     }
     commitJoints(candidate);
     setMessage(`Manipulador posicionado em "${wp.name}".`);
+  }
+
+  function applyJointPose(qVec, note = '') {
+    if (!Array.isArray(qVec)) return;
+    setIsPlaying(false);
+    const candidate = joints.map((j, i) => ({
+      ...j,
+      val: qVec[i] !== undefined ? Math.max(j.min, Math.min(j.max, qVec[i])) : j.val,
+      speed: 0,
+    }));
+    const normalized = normalizeJoints(candidate);
+    const col = detectSelfCollision(normalized, null, toolType, environment);
+    if (col.colliding) {
+      setCollisionAlert(col);
+      setMessage(`Pose bloqueada para evitar colisão: ${col.message}`);
+      return;
+    }
+    if (commitJoints(normalized) && note) {
+      setMessage(note);
+    }
   }
 
   function updateWaypointDuration(id, duration) {
@@ -1399,6 +1494,10 @@ function App() {
       setIkWaypointDuration={setIkWaypointDuration}
       solution={solution}
       setSolution={setSolution}
+      posture={posture}
+      postureInfo={postureInfo}
+      onSelectPosture={selectPosture}
+      onApplyBranch={applyPostureBranch}
       message={message}
       solveInverse={solveInverse}
       changeTarget={changeTarget}
@@ -1421,6 +1520,29 @@ function App() {
       placeObstacleInFront={placeObstacleInFront}
       showObstacleGizmo={showObstacleGizmo}
       setShowObstacleGizmo={setShowObstacleGizmo}
+      numeric={numeric}
+    />
+  ) : panelId === 'singularities' ? (
+    <SingularitiesTab
+      joints={joints}
+      toolFrame={toolFrame}
+      mode={mode}
+      setMode={setMode}
+      length={length}
+      setLength={setLength}
+      damping={damping}
+      setDamping={setDamping}
+      onChangeSetting={changeSetting}
+      diagnostics={diagnostics}
+      singularityReport={singularityReport}
+      applyJointPose={applyJointPose}
+      onComputeWorkspace={computeWorkspace}
+      computingCloud={computingCloud}
+      hasWorkspace={Boolean(workspaceCloud)}
+      showWorkspace={showWorkspace}
+      setShowWorkspace={setShowWorkspace}
+      showEllipsoid={showEllipsoid}
+      setShowEllipsoid={setShowEllipsoid}
       numeric={numeric}
     />
   ) : panelId === 'trajectory' ? (

@@ -265,7 +265,7 @@ function solveDlsStep(joints, fk, vDes, taskDims, refLen) {
   return dq.map(v => v * scale);
 }
 
-function marchAxisBound(seedQ, axis, sign, targetRef, otherAxes, jointsTemplate, taskDims, refLen, stepSize, environment = null, use3D = true) {
+function marchAxisBound(seedQ, axis, sign, targetRef, otherAxes, jointsTemplate, taskDims, refLen, stepSize, environment = null, use3D = true, collectSamples = false) {
   let curr = jointsTemplate.map((j, k) => ({
     ...j,
     val: Math.max(j.min, Math.min(j.max, seedQ[k])),
@@ -275,6 +275,7 @@ function marchAxisBound(seedQ, axis, sign, targetRef, otherAxes, jointsTemplate,
 
   const samples = [];
   const pushSample = (stateJoints, stateFk) => {
+    if (!collectSamples) return;
     const { w3, w2 } = yoshikawaMeasures(stateFk.jacobian);
     const w = use3D ? w3 : w2;
     const atLimit = stateJoints.some(j => (j.max - j.min) > 1e-6 && (j.val <= j.min + 1e-4 || j.val >= j.max - 1e-4));
@@ -542,7 +543,7 @@ function getStructuralEnvelope(joints, environment = null) {
 }
 
 function extractAxisSingularities({ axis, samples, lo, hi, spanAxis, globalMaxW, otherAxes, referencePos, validSamples, joints, use3D }) {
-  if (spanAxis < 1e-5 || !Number.isFinite(lo) || !Number.isFinite(hi)) return [];
+  if (spanAxis < 1e-5 || !Number.isFinite(lo) || !Number.isFinite(hi)) return { intervals: [], profile: [] };
   const all = samples.map(s => ({ ...s, onSlice: true }));
   const sliceTol = Math.max(0.25, spanAxis * 0.05);
   for (const s of validSamples) {
@@ -556,7 +557,7 @@ function extractAxisSingularities({ axis, samples, lo, hi, spanAxis, globalMaxW,
   const filtered = all
     .filter(s => Number.isFinite(s.coord) && Number.isFinite(s.w) && s.coord >= lo - 1e-4 && s.coord <= hi + 1e-4)
     .sort((a, b) => a.coord - b.coord);
-  if (filtered.length === 0) return [];
+  if (filtered.length === 0) return { intervals: [], profile: [] };
 
   const localMaxW = filtered.reduce((acc, s) => Math.max(acc, s.w), 0);
   const refMax = Math.max(globalMaxW * 0.65, localMaxW, 1e-6);
@@ -607,9 +608,10 @@ function extractAxisSingularities({ axis, samples, lo, hi, spanAxis, globalMaxW,
       lastOccupied = i;
     }
   }
-  if (firstOccupied === -1) return [];
+  if (firstOccupied === -1) return { intervals: [], profile: [] };
 
   const singularFlags = new Array(numBins).fill(false);
+  const emptyDeadFlags = new Array(numBins).fill(false);
   const binEffW = new Array(numBins).fill(Infinity);
   const binStartCoord = new Array(numBins).fill(0).map((_, i) => lo + i * binSize);
   const binEndCoord = new Array(numBins).fill(0).map((_, i) => lo + (i + 1) * binSize);
@@ -664,6 +666,7 @@ function extractAxisSingularities({ axis, samples, lo, hi, spanAxis, globalMaxW,
       ) {
         for (let b = gStart; b <= gEnd; b++) {
           singularFlags[b] = true;
+          emptyDeadFlags[b] = true;
           binEffW[b] = Math.min(binEffW[b], edgeMinW);
         }
         binStartCoord[gStart] = Math.max(lo, bins[leftIdx].maxCoord);
@@ -680,6 +683,17 @@ function extractAxisSingularities({ axis, samples, lo, hi, spanAxis, globalMaxW,
     }
   }
 
+  const profile = new Array(numBins).fill(null).map((_, i) => {
+    const coord = cleanVal(lo + (i + 0.5) * binSize);
+    const b = bins[i];
+    return {
+      coord,
+      wNorm: b ? Math.max(0, Math.min(1, b.effectiveW / refMax)) : null,
+      isSingular: singularFlags[i],
+      deadZone: emptyDeadFlags[i],
+    };
+  });
+
   const minBandSpan = Math.min(spanAxis, Math.max(binSize * 0.55, spanAxis * 0.03));
   const rawIntervals = [];
   let idx = 0;
@@ -690,10 +704,12 @@ function extractAxisSingularities({ axis, samples, lo, hi, spanAxis, globalMaxW,
     }
     const rStart = idx;
     let runMinW = Infinity;
+    let hasDeadZone = false;
     while (idx < numBins && singularFlags[idx]) {
       if (Number.isFinite(binEffW[idx]) && binEffW[idx] < runMinW) {
         runMinW = binEffW[idx];
       }
+      if (emptyDeadFlags[idx]) hasDeadZone = true;
       idx++;
     }
     const rEnd = idx - 1;
@@ -720,7 +736,7 @@ function extractAxisSingularities({ axis, samples, lo, hi, spanAxis, globalMaxW,
       }
     }
 
-    rawIntervals.push({ start: ivStart, end: ivEnd, w: runMinW });
+    rawIntervals.push({ start: ivStart, end: ivEnd, w: runMinW, hasDeadZone });
   }
 
   // Merge intervals separated by very narrow gaps (< 3% span)
@@ -731,38 +747,37 @@ function extractAxisSingularities({ axis, samples, lo, hi, spanAxis, globalMaxW,
     if (prev && iv.start - prev.end <= mergeGap) {
       prev.end = Math.max(prev.end, iv.end);
       prev.w = Math.min(prev.w, iv.w);
+      prev.hasDeadZone = prev.hasDeadZone || iv.hasDeadZone;
     } else {
       merged.push({ ...iv });
     }
   }
 
-  return merged.slice(0, 6).map(iv => {
+  const intervals = merged.slice(0, 6).map(iv => {
     const s0 = cleanVal(Math.max(lo, Math.min(hi, iv.start)));
     const s1 = cleanVal(Math.max(s0, Math.min(hi, iv.end)));
     const val = cleanVal((s0 + s1) / 2);
-    const kind = (s0 <= lo + spanAxis * 0.04 || s1 >= hi - spanAxis * 0.04) ? 'boundary' : 'interior';
-    const pctW = Math.round(Math.max(0, Math.min(100, (iv.w / refMax) * 100)));
+    const kind = iv.hasDeadZone ? 'deadzone' : (s0 <= lo + spanAxis * 0.04 || s1 >= hi - spanAxis * 0.04) ? 'boundary' : 'interior';
+    const minWPct = Math.round(Math.max(0, Math.min(100, (iv.w / refMax) * 100)));
     const wide = s1 - s0 >= Math.max(0.15, spanAxis * 0.04);
+    const kindText = kind === 'deadzone' ? 'Zona morta / separação' : kind === 'boundary' ? 'Fronteira de alcance' : 'Baixa manipulabilidade interna';
     const label = wide
-      ? `Faixa singular ${kind === 'boundary' ? 'de fronteira' : 'interna'} [${s0.toFixed(2)}, ${s1.toFixed(2)}] u (w mín=${pctW}%)`
-      : `${kind === 'boundary' ? 'Singularidade de fronteira' : 'Singularidade interna'} (${val.toFixed(2)} u · w=${pctW}%)`;
-    return { value: val, start: s0, end: s1, kind, label };
+      ? `${kindText}: [${s0.toFixed(2)}, ${s1.toFixed(2)}] u (w mín=${minWPct}%)`
+      : `${kindText}: ${val.toFixed(2)} u (w=${minWPct}%)`;
+    return { value: val, start: s0, end: s1, kind, minWPct, label };
   });
+
+  return { intervals, profile };
 }
 
-/**
- * Deterministically estimates the reachable Cartesian bounds [min, max] per axis.
- * When `referencePos` is supplied, adapts each active axis interval to the robot's
- * current pose, transverse coordinates, joint [min, max] limits, and self-collision rules.
- */
-export function computeCartesianBounds(joints, referencePos = null, mode = 'position', environment = null) {
+function evaluateCartesianSliceBounds(joints, referencePos = null, mode = 'position', environment = null, { collectSingularities = false } = {}) {
   if (!Array.isArray(joints) || joints.length === 0) {
-    return { min: [0, 0, 0], max: [0, 0, 0], span: [0, 0, 0], singularities: [[], [], []] };
+    return { min: [0, 0, 0], max: [0, 0, 0], span: [0, 0, 0], axisDetails: [] };
   }
 
   const { globalBounds, validSamples, use3D, globalMaxW } = getStructuralEnvelope(joints, environment);
   if (!Array.isArray(referencePos) || referencePos.length !== 3 || !referencePos.every(Number.isFinite)) {
-    return { ...globalBounds, singularities: [[], [], []] };
+    return { ...globalBounds, axisDetails: [] };
   }
 
   const taskDims = mode === 'xy' ? 2 : 3;
@@ -775,7 +790,8 @@ export function computeCartesianBounds(joints, referencePos = null, mode = 'posi
   const min = [...globalBounds.min];
   const max = [...globalBounds.max];
   const span = [...globalBounds.span];
-  const singularities = [[], [], []];
+  const axisNames = ['X', 'Y', 'Z'];
+  const axisDetails = [];
 
   for (let axis = 0; axis < taskDims; axis++) {
     const gSpan = globalBounds.span[axis];
@@ -798,7 +814,7 @@ export function computeCartesianBounds(joints, referencePos = null, mode = 'posi
 
     const recordBound = (res) => {
       if (!res) return;
-      if (Array.isArray(res.samples) && res.samples.length > 0) {
+      if (collectSingularities && Array.isArray(res.samples) && res.samples.length > 0) {
         axisSamples.push(...res.samples);
       }
       const val = res.bestCoord;
@@ -808,8 +824,8 @@ export function computeCartesianBounds(joints, referencePos = null, mode = 'posi
     };
 
     // 1. Directional kinematic ray-marching from current pose
-    const negPrimary = marchAxisBound(currentQ, axis, -1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D);
-    const posPrimary = marchAxisBound(currentQ, axis, 1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D);
+    const negPrimary = marchAxisBound(currentQ, axis, -1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D, collectSingularities);
+    const posPrimary = marchAxisBound(currentQ, axis, 1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D, collectSingularities);
     recordBound(negPrimary);
     recordBound(posPrimary);
 
@@ -842,23 +858,23 @@ export function computeCartesianBounds(joints, referencePos = null, mode = 'posi
       : null;
 
     if (negSeed) {
-      recordBound(marchAxisBound(negSeed, axis, -1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D));
-      if (negPrimary.bestCoord === null || negPrimary.bestCoord > lo + stepSize * 1.5) {
-        recordBound(marchAxisBound(negSeed, axis, 1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D));
+      recordBound(marchAxisBound(negSeed, axis, -1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D, collectSingularities));
+      if (collectSingularities && (negPrimary.bestCoord === null || negPrimary.bestCoord > lo + stepSize * 1.5)) {
+        recordBound(marchAxisBound(negSeed, axis, 1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D, collectSingularities));
       }
     }
     if (posSeed) {
-      recordBound(marchAxisBound(posSeed, axis, 1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D));
-      if (posPrimary.bestCoord === null || posPrimary.bestCoord < hi - stepSize * 1.5) {
-        recordBound(marchAxisBound(posSeed, axis, -1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D));
+      recordBound(marchAxisBound(posSeed, axis, 1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D, collectSingularities));
+      if (collectSingularities && (posPrimary.bestCoord === null || posPrimary.bestCoord < hi - stepSize * 1.5)) {
+        recordBound(marchAxisBound(posSeed, axis, -1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D, collectSingularities));
       }
     }
     if (mirrorSeed && mirrorSeed[0] >= joints[0].min && mirrorSeed[0] <= joints[0].max) {
       if (referencePos[axis] >= 0 && lo >= referencePos[axis] - 1e-3) {
-        recordBound(marchAxisBound(mirrorSeed, axis, -1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D));
+        recordBound(marchAxisBound(mirrorSeed, axis, -1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D, collectSingularities));
       }
       if (referencePos[axis] <= 0 && hi <= referencePos[axis] + 1e-3) {
-        recordBound(marchAxisBound(mirrorSeed, axis, 1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D));
+        recordBound(marchAxisBound(mirrorSeed, axis, 1, referencePos, otherAxes, joints, taskDims, refLen, stepSize, environment, use3D, collectSingularities));
       }
     }
 
@@ -872,8 +888,8 @@ export function computeCartesianBounds(joints, referencePos = null, mode = 'posi
     if (span[axis] < 1e-6) {
       max[axis] = min[axis];
       span[axis] = 0;
-    } else {
-      singularities[axis] = extractAxisSingularities({
+    } else if (collectSingularities) {
+      const { intervals, profile } = extractAxisSingularities({
         axis,
         samples: axisSamples,
         lo: min[axis],
@@ -886,8 +902,170 @@ export function computeCartesianBounds(joints, referencePos = null, mode = 'posi
         joints,
         use3D,
       });
+      axisDetails.push({
+        axis,
+        label: axisNames[axis],
+        min: min[axis],
+        max: max[axis],
+        span: span[axis],
+        currentCoord: clean(referencePos[axis]),
+        intervals,
+        profile,
+      });
     }
   }
 
-  return { min, max, span, singularities };
+  return { min, max, span, axisDetails, globalMaxW, validSamples, use3D, refLen };
+}
+
+/**
+ * Deterministically estimates the reachable Cartesian bounds [min, max] per axis.
+ * When `referencePos` is supplied, adapts each active axis interval to the robot's
+ * current pose, transverse coordinates, joint [min, max] limits, and self-collision rules.
+ */
+export function computeCartesianBounds(joints, referencePos = null, mode = 'position', environment = null) {
+  const { min, max, span } = evaluateCartesianSliceBounds(joints, referencePos, mode, environment, {
+    collectSingularities: false,
+  });
+  return { min, max, span };
+}
+
+/**
+ * Comprehensive singularity analysis for the dedicated Singularidades tab:
+ * computes 1D Cartesian slice intervals + Yoshikawa profiles along active X/Y/Z lines,
+ * single-joint sweep dips, and spatially diverse critical 3D configurations.
+ */
+export function analyzeRobotSingularities(joints, { referencePos = null, mode = 'position', environment = null } = {}) {
+  if (!Array.isArray(joints) || joints.length === 0) {
+    return { referencePos: [0, 0, 0], globalMaxW: 1, currentW: 0, currentDexterityPct: 0, axes: [], jointSweeps: [], criticalPoses: [] };
+  }
+
+  const fkNow = forwardKinematics(joints, { includeOrientation: false });
+  const refPos = (Array.isArray(referencePos) && referencePos.length === 3 && referencePos.every(Number.isFinite))
+    ? referencePos
+    : fkNow.positions.at(-1);
+
+  const sliceData = evaluateCartesianSliceBounds(joints, refPos, mode, environment, { collectSingularities: true });
+  const use3D = sliceData.use3D ?? true;
+  const globalMaxW = Math.max(1e-6, sliceData.globalMaxW || 1);
+  const validSamples = sliceData.validSamples || [];
+  const refLen = sliceData.refLen || 1;
+  const nowM = yoshikawaMeasures(fkNow.jacobian);
+  const currentW = use3D ? nowM.w3 : nowM.w2;
+  const currentDexterityPct = Math.round(Math.max(0, Math.min(100, (currentW / globalMaxW) * 100)));
+
+  // Single-joint sweep: vary one joint across [min, max] holding all others fixed at current pose
+  const jointSweeps = [];
+  const sweepPool = [];
+  for (let ji = 0; ji < joints.length; ji++) {
+    const j = joints[ji];
+    const jSpan = j.max - j.min;
+    if (!Number.isFinite(jSpan) || jSpan < 1e-5) continue;
+    const steps = 25;
+    const pts = [];
+    for (let s = 0; s <= steps; s++) {
+      const val = j.min + (jSpan * s) / steps;
+      const cand = joints.map((item, k) => (k === ji ? { ...item, val } : item));
+      const candFk = forwardKinematics(cand, { includeOrientation: false });
+      if (detectSelfCollision(cand, candFk, 'gripper', environment).colliding) continue;
+      const m = yoshikawaMeasures(candFk.jacobian);
+      const w = use3D ? m.w3 : m.w2;
+      pts.push({ val, w, pos: candFk.positions.at(-1), q: cand.map(item => item.val) });
+    }
+    if (pts.length < 3) continue;
+    const sweepMaxW = Math.max(globalMaxW * 0.35, ...pts.map(p => p.w), 1e-6);
+    const critCandidates = [];
+    for (let k = 0; k < pts.length; k++) {
+      const p = pts[k];
+      const isEdge = k === 0 || k === pts.length - 1;
+      const isValley = k > 0 && k < pts.length - 1 && p.w <= pts[k - 1].w + 1e-9 && p.w <= pts[k + 1].w + 1e-9 && p.w <= sweepMaxW * 0.45;
+      const isDeep = p.w <= sweepMaxW * 0.20;
+      if (isDeep || isValley || (isEdge && p.w <= sweepMaxW * 0.30)) {
+        critCandidates.push({
+          val: Math.round(p.val * 100) / 100,
+          w: p.w,
+          wPct: Math.round(Math.max(0, Math.min(100, (p.w / globalMaxW) * 100))),
+          qVec: p.q,
+          pos: p.pos,
+        });
+      }
+    }
+    critCandidates.sort((a, b) => a.w - b.w);
+    const kept = [];
+    const minSep = jSpan * 0.12;
+    for (const c of critCandidates) {
+      if (kept.every(k => Math.abs(k.val - c.val) >= minSep)) {
+        kept.push(c);
+        sweepPool.push({
+          w: c.w,
+          pos: c.pos,
+          q: c.qVec,
+          category: 'Junta crítica',
+          label: `J${ji + 1} = ${c.val}${j.type === 'R' ? '°' : ' u'}`,
+        });
+        if (kept.length >= 3) break;
+      }
+    }
+    kept.sort((a, b) => a.val - b.val);
+    if (kept.length > 0) {
+      jointSweeps.push({
+        jointIndex: ji,
+        id: j.id,
+        type: j.type,
+        unit: j.type === 'R' ? '°' : 'u',
+        min: j.min,
+        max: j.max,
+        currentVal: j.val,
+        criticalValues: kept,
+      });
+    }
+  }
+
+  // Spatially diverse low-dexterity critical configurations across workspace & joint sweeps
+  const posePool = [...sweepPool];
+  for (const s of validSamples) {
+    if (!Array.isArray(s.q) || s.q.length !== joints.length) continue;
+    const w = use3D ? s.w3 : s.w2;
+    if (!Number.isFinite(w) || w > globalMaxW * 0.35) continue;
+    const rCenter = Math.hypot(s.pos[0], s.pos[1]);
+    const category = rCenter < refLen * 0.45 ? 'Zona central / coluna' : 'Baixa destreza 3D';
+    posePool.push({
+      w,
+      pos: s.pos,
+      q: s.q,
+      category,
+      label: `${category} · R=${rCenter.toFixed(1)} u`,
+    });
+  }
+
+  posePool.sort((a, b) => a.w - b.w);
+  const criticalPoses = [];
+  const minDist3D = Math.max(0.8, refLen * 0.45);
+  for (const item of posePool) {
+    if (criticalPoses.every(existing => Math.hypot(
+      existing.pos[0] - item.pos[0],
+      existing.pos[1] - item.pos[1],
+      existing.pos[2] - item.pos[2]
+    ) >= minDist3D)) {
+      criticalPoses.push({
+        id: `sing-pose-${criticalPoses.length + 1}`,
+        category: item.category,
+        label: item.label,
+        pos: item.pos.map(v => Math.round(v * 100) / 100),
+        q: item.q.map((v, idx) => (joints[idx].type === 'R' ? Math.round(v * 10) / 10 : Math.round(v * 100) / 100)),
+        wPct: Math.round(Math.max(0, Math.min(100, (item.w / globalMaxW) * 100))),
+      });
+      if (criticalPoses.length >= 6) break;
+    }
+  }
+
+  return {
+    referencePos: refPos.map(v => Math.round(v * 100) / 100),
+    globalMaxW,
+    currentW,
+    currentDexterityPct,
+    axes: sliceData.axisDetails || [],
+    jointSweeps,
+    criticalPoses,
+  };
 }

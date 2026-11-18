@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PRESETS, PRESET_LIST } from '../src/presets.js';
 import { DEFAULT_JOINTS, computeToolFrame, forwardKinematics, inverseKinematics, validateJoints } from '../src/kinematics.js';
-import { computeCartesianBounds, generateWorkspaceCloud, heatColor } from '../src/workspace.js';
+import { analyzeRobotSingularities, computeCartesianBounds, generateWorkspaceCloud, heatColor } from '../src/workspace.js';
 import { generateCpp, generatePython, generateRos2 } from '../src/codeGenerator.js';
 
 test('all robot presets pass strict kinematic validation', () => {
@@ -153,37 +153,36 @@ test('all default robot presets orient the end-effector straight outward along t
   }
 });
 
-test('computeCartesianBounds detects interior and boundary singularity intervals inside active axis spans', () => {
+test('analyzeRobotSingularities reports Cartesian axis intervals, profiles, joint sweeps, and critical 3D poses while computeCartesianBounds stays clean', () => {
   const rprCenter = inverseKinematics(DEFAULT_JOINTS, { position: [5, 0, 0], rpy: [0, 0, 0] }, { mode: 'xy' });
   const rprEnd = forwardKinematics(rprCenter.joints).positions.at(-1);
   const rprBounds = computeCartesianBounds(rprCenter.joints, rprEnd, 'xy');
-  assert.ok(Array.isArray(rprBounds.singularities) && rprBounds.singularities.length === 3);
-  for (let axis = 0; axis < 2; axis++) {
-    assert.ok(rprBounds.singularities[axis].length > 0, `Expected singularity marker on RPR axis ${axis}`);
-    for (const marker of rprBounds.singularities[axis]) {
-      assert.ok(Number.isFinite(marker.start) && Number.isFinite(marker.end));
-      assert.ok(marker.start <= marker.end + 1e-9);
-      assert.ok(marker.start >= rprBounds.min[axis] - 1e-2 && marker.end <= rprBounds.max[axis] + 1e-2);
-      assert.ok(marker.value >= marker.start - 1e-2 && marker.value <= marker.end + 1e-2);
-      assert.ok(['boundary', 'interior'].includes(marker.kind));
-      assert.ok(typeof marker.label === 'string' && marker.label.length > 0);
+  assert.equal(rprBounds.singularities, undefined);
+
+  const rprReport = analyzeRobotSingularities(rprCenter.joints, { referencePos: rprEnd, mode: 'xy' });
+  assert.equal(rprReport.axes.length, 2);
+  for (const axisData of rprReport.axes) {
+    assert.equal(axisData.profile.length, 32);
+    assert.ok(axisData.intervals.length > 0, `Expected singularity interval on RPR axis ${axisData.label}`);
+    for (const iv of axisData.intervals) {
+      assert.ok(Number.isFinite(iv.start) && Number.isFinite(iv.end) && iv.start <= iv.end + 1e-9);
+      assert.ok(iv.start >= axisData.min - 1e-2 && iv.end <= axisData.max + 1e-2);
+      assert.ok(['boundary', 'interior', 'deadzone'].includes(iv.kind));
+      assert.ok(typeof iv.label === 'string' && iv.label.length > 0);
     }
   }
 
   const ur5 = PRESETS.ur5.joints;
   const ur5End = forwardKinematics(ur5).positions.at(-1);
-  const ur5Bounds = computeCartesianBounds(ur5, ur5End, 'position');
-  assert.ok(ur5Bounds.singularities.some(list => list.length > 0), 'Expected UR5 Cartesian sliders to surface singularity intervals');
-  for (let axis = 0; axis < 3; axis++) {
-    for (const marker of ur5Bounds.singularities[axis]) {
-      assert.ok(Number.isFinite(marker.start) && Number.isFinite(marker.end) && marker.start <= marker.end + 1e-9);
-      assert.ok(marker.value >= ur5Bounds.min[axis] - 1e-2 && marker.value <= ur5Bounds.max[axis] + 1e-2);
-    }
-  }
+  const ur5Report = analyzeRobotSingularities(ur5, { referencePos: ur5End, mode: 'position' });
+  assert.equal(ur5Report.axes.length, 3);
+  assert.ok(ur5Report.axes.some(a => a.intervals.length > 0), 'Expected UR5 singularity intervals on Cartesian axes');
+  assert.ok(ur5Report.jointSweeps.length > 0, 'Expected UR5 joint sweeps to identify critical joint values');
+  assert.ok(ur5Report.criticalPoses.length > 0, 'Expected UR5 critical 3D poses');
 
   const scaraY0 = inverseKinematics(PRESETS.scara.joints, { position: [3, 0, 0.2], rpy: [0, 0, 0] }, { mode: 'position' });
   const scaraEnd = forwardKinematics(scaraY0.joints).positions.at(-1);
-  const scaraBounds = computeCartesianBounds(scaraY0.joints, scaraEnd, 'position');
-  const innerDeadZone = scaraBounds.singularities[0].find(m => m.kind === 'interior' && (m.end - m.start) > 1.0);
+  const scaraReport = analyzeRobotSingularities(scaraY0.joints, { referencePos: scaraEnd, mode: 'position' });
+  const innerDeadZone = scaraReport.axes[0].intervals.find(iv => (iv.kind === 'deadzone' || iv.kind === 'interior') && (iv.end - iv.start) > 1.0);
   assert.ok(innerDeadZone, 'Expected SCARA X slice at Y=0 to report the central unreachable singular interval');
 });

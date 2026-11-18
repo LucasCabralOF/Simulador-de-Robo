@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const ANALYSIS_IDS = new Set(['model', 'forward', 'differential', 'inverse', 'trajectory', 'workspace', 'export', 'report']);
+const ANALYSIS_IDS = new Set(['model', 'forward', 'differential', 'inverse', 'singularities', 'trajectory', 'workspace', 'export', 'report']);
 
 export function usePanels(onClearMessage) {
   const [tab, setTab] = useState('model');
@@ -73,6 +73,7 @@ export function usePanels(onClearMessage) {
 
   const showInverse = tab === 'inverse' || openPanels.includes('inverse');
   const showDifferential = tab === 'differential' || openPanels.includes('differential');
+  const showSingularities = tab === 'singularities' || openPanels.includes('singularities');
   const showReport = tab === 'report' || openPanels.includes('report');
   const showExport = tab === 'export' || openPanels.includes('export');
 
@@ -84,6 +85,7 @@ export function usePanels(onClearMessage) {
     activePanel,
     showInverse,
     showDifferential,
+    showSingularities,
     showReport,
     showExport,
     handleSelectTab,

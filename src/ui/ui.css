@@ -454,43 +454,6 @@
   align-items: center;
 }
 
-.ui-slider-markers {
-  position: absolute;
-  left: 7.5px;
-  right: 7.5px;
-  top: 50%;
-  height: 0;
-  pointer-events: none;
-  z-index: 2;
-}
-
-.ui-slider-singularity-dot {
-  position: absolute;
-  top: 0;
-  min-width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #ff4d5e;
-  border: 1.5px solid #fff0f2;
-  box-shadow: 0 0 0 1.5px rgba(23, 27, 30, 0.9), 0 0 6px rgba(255, 77, 94, 0.75);
-  transform: translate(-50%, -50%);
-}
-
-.ui-slider-singularity-dot.is-interval {
-  height: 8px;
-  background: rgba(255, 77, 94, 0.42);
-  border: 1.5px solid #ff6b7a;
-  box-shadow: 0 0 0 1px rgba(23, 27, 30, 0.75), 0 0 6px rgba(255, 77, 94, 0.5);
-}
-
-.ui-slider-singularity-dot.is-boundary:not(.is-interval) {
-  background: #ff6b7a;
-}
-
-.ui-slider-wrap.is-disabled .ui-slider-singularity-dot {
-  opacity: 0.45;
-}
-
 /* Ant Design Dark Checkbox */
 .ui-checkbox {
   position: relative;
